@@ -1,0 +1,48 @@
+# 个人化组件
+
+螺壳输入法自带的个人化组件：壳把所有引擎（打字、语音）的上屏、上屏后的退格和忘掉转给它，别的引擎可以经壳转问它。设计见 `docs/设计.md` 的"个人化与联想"和 ADR 0010，消息字段见 `docs/引擎协议.md` 的"个人化组件""转问"。
+
+## 现在做了什么
+
+第 1 期：把上屏写进螺壳的记忆（luoke-mem），话题和写法是和 luoke-mem 商定的（顶层 `projects/luoke-ime.md`「在记忆里读写什么」）：
+
+- `ime-commit`（用户 / 陈述）：上屏的字。同一应用里接连的上屏合成一段，停手 20 秒写进去；换应用、换引擎、隔了 60 秒以上，或前文对不上（光标挪过、中间有不经输入法的字）就断开。这一段开始时光标前的字（最多 200 字）放在 `data.context`，标成第三方写的（`{"text", "speaker": "third_party"}`）。切走时的自动上屏单独记一条，标 `auto`。
+- `ime-correction`（用户 / 活动）：上屏后马上删改（这几个字也从那一段里去掉）、在候选里没选首选。
+- `ime-forget`（用户 / 陈述）：忘掉候选（Shift+⌫）。
+- 凭证只遮那一串、其余照记（顶层 ADR 0013）：`luoke_mem.mask_secrets` 把密码、验证码、密钥和令牌、完整卡号和证件号遮成"〔密码〕"这样，改选、删改、前文里的也遮；老版 luoke_mem 没有它时退回 `never_kept`，含凭证的那段不记。健康、法律、宗教政治照 `sensitive_kinds` 标上类别，不藏，联想照样用。安全输入、暂停所有记录、"禁止记录"的应用，壳根本不转过来；记忆记录关着时（自带的组件默认开），壳不给记忆的路径、也不转上屏。
+- luoke_mem 用主控带的那份（组件跑在主控的 Python 上，`import luoke_mem` 就是它；luoke-mem 的约定），包里不自带；导入不了就不写记忆。`build.sh` 带进 `vendor/` 的那份只给开发和测试用。
+- 写记忆在自己的线程里排队，不让转问的答复等它。
+- 选项"上屏原文保留多久"：默认一直保留；设了保留期，每 6 小时删一次过期的（被理解引用的留下）。
+第 2 期：模型打分从小鹤、全拼引擎搬到这里，只加载一份模型。`scorer.py` 在子进程里跑（要 oMLX 自带的、能跑 MLX 的 Python，和选项里的模型目录，默认 `~/.omlx/models/local/Qwen3.5-0.8B-Base-4bit`）。引擎经壳转问 `score`，在这里排队、按顺序算；排队超过 0.7 秒的（发问的已经不等了）不算。
+
+接主控（luoke-core）：选项 `scorer` 是 `hub`（只经主控，默认：发 `to: "hub"` 的转问，壳转给主控的 `luoke-ime.rerank` 任务）、`local`（本机的打分进程）、`auto`（主控优先；主控不可用、在加载、忙时交给本机，并照 `retry_after` 过一会儿再试主控）。联想里模型那一路也一样（主控的 `luoke-ime.predict` 任务）：主控只做通用的续写（`/v1/continue`，交回逐个 token 的文字和对数概率），怎么截（碰到标点、超过 6 个字就退回上一个 token 的边界）、挑哪几个、把握门槛都在这里（`continuations_from_branches`、`model_candidates`）；老主控没有 continue 时退回旧的 `/v1/predict`。经主控时本机的打分进程不预先起：要退回本机时才起，主控好着、它又闲了 5 分钟就停掉，全机只留一份模型（顶层 ADR 0001）。
+
+发布版只经主控、没有本机退路：本机打分要能跑 MLX 的 Python，现在借用户自己装的 oMLX 里的，干净的 Mac 上没有；主控不可用时照常打字（苹果和 RIME 的候选），只是没有重排和联想。`local`、`auto` 只在开发和评测时用：发布包不带 `scorer.py`、没有 GPU 权限、选项里没有模型（`scripts/bundle-engines.sh`），选项 `scorer` 写了 `local`、`auto` 也只经主控。`bench.py` 默认用本机打分，命令行版的 `try` 没写 `--hub` 时也是。
+
+第 3 期：联想 `predict`。壳上屏后来问，先找你自己写过的（最近 5000 段上屏里，前文末尾 2–6 个字后面常接什么；只对上两个字时要出现过两次），再请模型接着写：取最可能的 8 个开头、各往后续到标点或 6 个字，平均每个字的对数概率低于 −2.5 的不要。最多给 5 个，你写过的在前。
+
+转问：`ping` 答 `{"ok": true}`；`hotwords` 还没做，答 `not_implemented`。
+
+本机的打分进程（`scorer.py`）把 MLX 留着复用的 GPU 缓冲限在 1 GB、空闲 30 秒就还回去：不限时每次打分的形状都不一样，缓冲只增不减，本机连续打分 500 次就到 14 GB，测试机（M4 32 GB）上跑了 5 天占了 13 GB（多半在交换区）。限了以后连续打分时约 2.5 GB、闲下来约 1.3 GB，打分 p50 慢 1–2 ms。
+
+`build.sh` 把 luoke-mem 仓库里已提交的 luoke_mem 带进 `vendor/`（自己带一份，不依赖螺壳记忆装在哪、是什么版本），只带 `__init__.py`、`memory.py`、`sensitive.py`：工具要用的接口都在里面，也不导入别的模块（luoke-mem DESIGN「版本和兼容」的约定）。组件本身只用标准库，发布版用主控的 Python，开发时 `/usr/bin/python3`（3.9）也能跑。所需权限：记忆，不联网；开发时的 GPU 给本机的打分进程用，发布版没有。
+
+## 接下来
+
+按 `docs/设计.md` 的分期：
+
+1. 读记忆里关于用户的理解（常用说法 `term`、关注的话题等，由 luoke-mem 从各工具的记录里归纳，顶层 ADR 0015；输入法不自己归纳，只用"比较确定"以上的）；也读别的工具的记录（比如邮件里的人名、专名，`records(tool=None)`，顶层 ADR 0013），给候选加分、当联想和热词的素材；忘掉候选时对来自 term 的候选调 `reject`。
+2. 带个人化的打分：前文里加上关于你的理解和最近写过的话，常用说法加分。
+3. 联想的门槛按真实使用再调（`eval_predict.py` 用博客语料测模型那一路；`--hub <socket>` 经主控的 `luoke-ime.predict` 测，`--result` 写发布用的证据，格式同小鹤的 `bench.py`）。
+4. 主控上线：模型请求改走主控（已做，默认只经主控）。
+5. 语音引擎的热词（`hotwords`）。
+
+## 试
+
+```bash
+engines/personal/build.sh             # 带进 luoke_mem，跑组件的测试（test_personal.py）
+luoke-ime check engines/personal
+luoke-ime try examples/minimal --personal engines/personal --keys 'nihao{space},wo{space}{bs}{bs}'
+```
+
+`try` 最后会列出转给个人化组件的每条消息，记忆用临时的一份（`$TMPDIR/luoke-ime-try-<进程号>-mem.db`）。随 LuokeIME.app 发布，用螺壳主控带的 Python（`engine.json` 的 `run` 写 `luoke-python`；开发机上没装主控时用 PATH 里的 `python3`）。开发时先跑 `build.sh`，再把这个文件夹放进 `~/.luoke/ime/engines/personal`（会盖过包里的），菜单里会出现"暂停记录"和当前应用的"不记录"。装上之后，上屏就写进你真的记忆 `~/.luoke/mem.db`。

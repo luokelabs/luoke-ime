@@ -1,0 +1,5 @@
+雾凇拼音（rime-ice），GPL-3.0-only
+上游：https://github.com/iDvel/rime-ice
+提交：da1fbe602e38f26db846fa10120ee64c2b0324c0（2026-10-05）
+这里带的是上游这一版的原文（YAML 方案、词库和 lua 脚本），没有改动；少了上游的 README、AGENTS.md、custom_phrase.txt、others/、build/ 和 .github/。
+对应源码就是这些文件本身；也可以从上面的地址按提交号取得。

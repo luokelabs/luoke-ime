@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>螺壳测试页</title>
+<style>
+  body { font: 16px -apple-system, sans-serif; margin: 40px; }
+  textarea, input, div[contenteditable] { font: 18px -apple-system, sans-serif; width: 600px; padding: 8px; border: 1px solid #999; }
+  textarea { height: 120px; }
+  div[contenteditable] { min-height: 120px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<p>螺壳跨应用测试用的输入框（网址后面的 #textarea、#input、#editable 决定显示哪一种）。</p>
+<textarea id="textarea" class="hidden" aria-label="测试文本框"></textarea>
+<input id="input" class="hidden" aria-label="测试单行框">
+<div id="editable" class="hidden" contenteditable="true" aria-label="测试编辑区" role="textbox" aria-multiline="true"></div>
+<script>
+  const kind = (location.hash || "#textarea").slice(1);
+  const el = document.getElementById(kind) || document.getElementById("textarea");
+  el.classList.remove("hidden");
+  el.focus();
+  // 把输入框的状态报告给本机的小服务（pageserver.py）：浏览器不一定响应辅助功能查询
+  // page：这次加载的标识。之前测试留下的标签页也在报告，小服务只认最近加载的那一页
+  let composing = "", seq = 0;
+  const page = Math.random().toString(36).slice(2);
+  const value = () => (el.value !== undefined ? el.value : el.innerText.replace(/\n$/, ""));
+  const report = () => {
+    if (location.protocol !== "http:") return;
+    // 带递增序号：报告是异步发的，旧的可能比新的晚到
+    fetch("/state", { method: "POST", body: JSON.stringify({ page, seq: ++seq, value: value(), composing, focused: document.activeElement === el }) });
+  };
+  el.addEventListener("compositionstart", () => { composing = ""; report(); });
+  el.addEventListener("compositionupdate", (e) => { composing = e.data || ""; report(); });
+  el.addEventListener("compositionend", () => { composing = ""; report(); });
+  for (const t of ["input", "focus", "blur"]) el.addEventListener(t, report);
+  setInterval(report, 200);
+  report();
+</script>
+</body>
+</html>

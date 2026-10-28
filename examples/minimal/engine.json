@@ -1,0 +1,7 @@
+{
+  "protocol": 1,
+  "name": "最小示例",
+  "kind": "typing",
+  "run": ["luoke-python", "engine.py"],
+  "input_keys": "abcdefghijklmnopqrstuvwxyz"
+}

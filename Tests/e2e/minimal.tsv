@@ -1,0 +1,13 @@
+# 用最小示例引擎（全拼小表：ni 你呢泥 / hao 好号 / nihao 你好 / wo 我握 / women 我们）。名称<TAB>按键脚本<TAB>期望输入框里的文字
+整词	nihao{probe}{space}	你好
+部分选词留在显示串里	nihaowo1{probe}{space}	你好我
+输入中按标点先收尾上屏	wo,	我，
+高亮部分候选后剩余原始字母	women{right}{space}{space}	我men
+Esc放弃	nihao{esc}	
+回车上屏原始字母	nihao{enter}	nihao
+单按Shift切英文再切回	{shift}{probe}ok{shift}{probe}wo{probe}{space}	ok我
+退格撤销已选部分	nihaowo1{bs}{bs}{bs}{probe}{space}	你好
+空闲时标点	,	，
+数字后保持半角	3.14	3.14
+引号成对	"wo"	“我”
+Shift加字母放行	Wo{space}	Wo

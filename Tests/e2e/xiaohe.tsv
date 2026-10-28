@@ -1,0 +1,8 @@
+# 小鹤双拼引擎（苹果转换引擎）。名称<TAB>按键脚本<TAB>期望输入框里的文字
+整句	woxliifj{probe}{space}	我想吃饭
+长句	vexpdzyild{space}	这些都依赖
+部分选词后接着选	woxliifj3{probe}{space}	我想吃饭
+标点收尾	nihc,	你好，
+记住改选的词	ui2ui{space}	时时
+连续两句	wobuvidc{space}woxliifj{space}	我不知道我想吃饭
+按前文选词	tazdhylluhxuxxle{wait:1500}{space}uiyj{wait:1500}{space}	他在婚礼上许下了誓言

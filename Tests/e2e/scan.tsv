@@ -1,0 +1,10 @@
+# 兼容性扫描：小鹤双拼。名称<TAB>按键脚本<TAB>期望输入框里的文字
+# 联想的几条要有主控出联想（测试机上另起一个开发版螺壳，输入法的 hub socket 指过去）；"祝你一路"后面"平安"的把握约 0.6
+联想Tab选第一个	vuni{space}yilu{space}{wait:1500}{probe}{tab}{wait:400}{probe}{space}	祝你一路平安
+联想Tab再方向键选第二个	vuni{space}yilu{space}{wait:1500}{tab}{wait:400}{right}{wait:200}{space}	祝你一路顺风
+联想Tab后Esc收起	vuni{space}yilu{space}{wait:1500}{tab}{wait:400}{esc}	祝你一路
+联想亮着时接着打字	vuni{space}yilu{space}{wait:1500}woxliifj{space}	祝你一路我想吃饭
+数字后逗号接中文	27,soyi{space}	27，所以
+数字后逗号接数字	1,000	1,000
+花括号打成直角引号	{lbrace}wo{rbrace}	「我」
+中括号照旧	[wo]	【我】

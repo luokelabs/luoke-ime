@@ -1,0 +1,27 @@
+.build/
+.swiftpm/
+*.xcodeproj
+research/seatbelt/tmp/
+Tests/e2e/results/
+engines/xiaohe/xiaohe
+
+# 评测的记录（来自作者的私人语料：按键、前文），不进仓库
+bench-*/
+
+# 打出来的 .app 和回滚用的旧版（放 *.noindex 里，Spotlight 不登记）
+*.noindex/
+
+# 本机的、不进仓库的（CLAUDE.md、STATUS.md 是给开发会话和进度看板的本地文件，不进公开的树）
+CLAUDE.md
+STATUS.md
+CLAUDE.local.md
+.env
+.env.*
+build/
+__pycache__/
+.DS_Store
+.luoke-commit
+# 雾凇词库（GPL-3.0，build.sh 下载到各引擎的 vendor/，见各自的 .gitignore）和 RIME 编好的词典（在引擎数据目录里）都不进仓库
+
+# 按旧系统编的 librime 和它的源码（scripts/build-librime.sh）
+/vendor/

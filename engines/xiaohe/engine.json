@@ -1,0 +1,48 @@
+{
+  "protocol": 1,
+  "name": "小鹤双拼",
+  "kind": "typing",
+  "run": [
+    "./xiaohe"
+  ],
+  "input_keys": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "feedback": true,
+  "forget_all": true,
+  "context": 120,
+  "asks": [
+    "personal"
+  ],
+  "options": {
+    "components": [
+      {
+        "id": "root",
+        "component": "Column",
+        "children": [
+          "rerank",
+          "rime"
+        ]
+      },
+      {
+        "id": "rerank",
+        "component": "CheckBox",
+        "label": "按前文重排（模型在螺壳里）",
+        "value": {
+          "path": "/rerank"
+        }
+      },
+      {
+        "id": "rime",
+        "component": "CheckBox",
+        "label": "把 RIME（雾凇词库）的候选也并进来",
+        "value": {
+          "path": "/rime"
+        }
+      }
+    ],
+    "data": {
+      "rerank": true,
+      "rime": true,
+      "gate": 3
+    }
+  }
+}

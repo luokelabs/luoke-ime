@@ -1,0 +1,21 @@
+{
+  "contract": 1,
+  "accessory": "luoke-ime",
+  "bundle_id": "ai.luoke.inputmethod.Luoke",
+  "name": "螺壳输入法",
+  "version": "0.1.23",
+  "type": "input-method",
+  "min_macos": "26",
+  "entry": [],
+  "resident": false,
+  "memory": true,
+  "ui_element": true,
+  "tasks": [
+    { "name": "luoke-ime.rerank", "kind": "score", "main": false },
+    { "name": "luoke-ime.predict", "kind": "predict", "main": false }
+  ],
+  "data": ["~/.luoke/ime"],
+  "capabilities": {
+    "listing": {"tagline": "小鹤双拼、全拼，本机模型帮你挑词、往下联想，从你打的字里学", "category": "输入"}
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "protocol": 1,
+  "name": "个人化",
+  "kind": "personal",
+  "run": ["luoke-python", "personal.py"],
+  "context": 200,
+  "app": true,
+  "asks": ["hub"],
+  "permissions": { "network": "none", "memory": true, "gpu": true },
+  "options": {
+    "components": [
+      { "id": "root", "component": "Column", "children": ["keep", "note"] },
+      { "id": "keep", "component": "ChoicePicker", "label": "上屏原文保留多久",
+        "options": [
+          { "label": "一直保留", "value": "forever" },
+          { "label": "一年", "value": "365" },
+          { "label": "三个月", "value": "90" },
+          { "label": "一个月", "value": "30" }
+        ],
+        "value": { "path": "/keep" } },
+      { "id": "note", "component": "Text", "text": "过期的上屏原文会从记忆里删掉；从中学到的常用说法还在，它引用的那几条作为依据留下。" }
+    ],
+    "data": { "keep": ["forever"], "model": "~/.omlx/models/local/Qwen3.5-0.8B-Base-4bit", "scorer": "hub" }
+  }
+}
