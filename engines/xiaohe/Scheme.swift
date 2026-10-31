@@ -1,11 +1,12 @@
 import Foundation
 
-/// 按键方案。小鹤双拼和全拼共用这份代码，只在"一串按键怎么读"上不同（engines/quanpin 用 --scheme quanpin 编译运行）。
-/// - 小鹤双拼：每个音节固定两个键，引擎自己把按键拆成全拼音节（用 ' 隔开）交给苹果的转换引擎。
+/// 按键方案。小鹤双拼、自然码双拼和全拼共用这份代码，只在"一串按键怎么读"上不同
+/// （engines/ziranma、engines/quanpin 用 --scheme ziranma / quanpin 运行）。
+/// - 双拼（小鹤、自然码）：每个音节固定两个键，引擎自己把按键拆成全拼音节（用 ' 隔开）交给苹果的转换引擎；两种只差键位表。
 /// - 全拼：原始字母直接交给苹果。音节怎么切、每个候选用掉几个键，都按苹果给的拼音段和音节长度算——
 ///   它会消歧（fangan → 方案 / 反感）、认简拼（nh → 你好）、纠错（zhognguo → 中国）。
 enum Scheme: String {
-    case xiaohe, quanpin
+    case xiaohe, ziranma, quanpin
 
     static let current: Scheme = {
         let a = CommandLine.arguments
@@ -13,10 +14,16 @@ enum Scheme: String {
         return .xiaohe
     }()
 
-    var rimeSchema: String { self == .xiaohe ? "double_pinyin_flypy" : "rime_ice" }
+    /// 每个音节两个键。
+    var isDouble: Bool { self != .quanpin }
+
+    var name: String { ["xiaohe": "小鹤双拼", "ziranma": "自然码双拼", "quanpin": "全拼"][rawValue]! }
+
+    /// 雾凇里的方案：double_pinyin 就是自然码。
+    var rimeSchema: String { ["xiaohe": "double_pinyin_flypy", "ziranma": "double_pinyin", "quanpin": "rime_ice"][rawValue]! }
 
     /// 增量复用：定的时候往后看了至少这么多个键才沿用（约 4 个音节）。
-    var margin: Int { self == .xiaohe ? 8 : 12 }
+    var margin: Int { isDouble ? 8 : 12 }
 }
 
 /// 一串按键怎么读。
@@ -27,7 +34,7 @@ struct Reading {
     var ends: [Int] = []
     /// 光标处显示的样子。
     var display: String
-    /// 整串都读得通（小鹤：都拆得成音节；全拼：苹果有用掉整串的汉字候选）。
+    /// 整串都读得通（双拼：都拆得成音节；全拼：苹果有用掉整串的汉字候选）。
     var complete = false
     /// 值得让模型重排：读得通、至少两个音节。
     var refinable = false
@@ -41,15 +48,15 @@ var readingCache: [String: Reading] = [:]
 func reading(_ input: String) -> Reading {
     if let r = readingCache[input] { return r }
     if readingCache.count > 5000 { readingCache = [:] }
-    let r = Scheme.current == .xiaohe ? xiaoheReading(input) : quanpinReading(input)
+    let r = Scheme.current.isDouble ? doubleReading(input) : quanpinReading(input)
     readingCache[input] = r
     return r
 }
 
-/// 小鹤：用掉的键数按候选对应的音节数算（每个音节两个键，末尾半个音节时以可解读的键数为限）；苹果没说时按每个字两个键。
+/// 双拼：用掉的键数按候选对应的音节数算（每个音节两个键，末尾半个音节时以可解读的键数为限）；苹果没说时按每个字两个键。
 /// 字数跟音节数对不上的汉字候选丢掉：那是苹果把一个音节拆成了两个全拼音节（huai → 互爱、xiao → 西澳、
-/// ta'm → 天安门），小鹤里这些字不是这么打的。
-func xiaoheReading(_ input: String) -> Reading {
+/// ta'm → 天安门），双拼里这些字不是这么打的。
+func doubleReading(_ input: String) -> Reading {
     let keys = Array(input)
     let p = parse(keys)
     var r = Reading(display: input) // 光标处原样显示敲的键：每两个键一个音节，没有歧义；打英文时也不会变成怪的全拼

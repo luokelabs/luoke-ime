@@ -66,7 +66,7 @@ let mecabra: Mecabra
 do {
     mecabra = try Mecabra()
     // 启动自检：苹果的接口若已失效，立刻退出并说明原因，壳会停用这个引擎
-    let probe = Scheme.current == .xiaohe ? "ni'hao" : "nihao"
+    let probe = Scheme.current.isDouble ? "ni'hao" : "nihao"
     guard mecabra.candidates(probe, limit: 5).contains("你好") else { throw EngineFailure("苹果的转换引擎自检没通过：\(probe) 没有给出「你好」") }
     if Scheme.current == .quanpin, mecabra.lookup("nihao", limit: 1, lengths: true).first?.syllableLengths == nil {
         throw EngineFailure("苹果的转换引擎不给音节长度了（可能是系统升级改了接口），全拼没法切分")
@@ -77,9 +77,29 @@ do {
 }
 
 if CommandLine.arguments.contains("--selftest") {
-    let sample = Scheme.current == .xiaohe ? "woxliifj" : "woxiangchifan"
+    let sample = ["xiaohe": "woxliifj", "ziranma": "woxdiifj", "quanpin": "woxiangchifan"][Scheme.current.rawValue]!
     let r = reading(sample)
-    print("自检通过（\(Scheme.current == .xiaohe ? "小鹤双拼" : "全拼")）：\(sample) → \(r.display) → \(r.candidates.first?.text ?? "无")")
+    print("自检通过（\(Scheme.current.name)）：\(sample) → \(r.display) → \(r.candidates.first?.text ?? "无")")
+    exit(0)
+}
+
+// 评测用：标准输入每行一串小鹤按键，换成当前方案的按键输出（博客语料的按键一列是小鹤的）。
+// 拆不成小鹤音节的那段（英文、标点、末尾半个音节）原样留着。
+if CommandLine.arguments.contains("--from-xiaohe") {
+    while let line = readLine() {
+        let keys = Array(line)
+        var out = "", i = 0
+        while i < keys.count {
+            if i + 1 < keys.count, let s = xiaoheSyllable[String(keys[i...i + 1])] {
+                out += Scheme.current.isDouble ? doubleKeys(s, finals: Scheme.current == .ziranma ? ziranmaFinals : xiaoheFinals)! : s
+                i += 2
+            } else {
+                out.append(keys[i])
+                i += 1
+            }
+        }
+        print(out)
+    }
     exit(0)
 }
 
@@ -154,7 +174,7 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
     let english = (complete && keys.count < 4) || keys.count > 12 ? [] : englishWords(input).filter { !memory.isForgotten(input, $0) }
     var seen = Set<String>(english)
     var out: [[String: Any]] = []
-    // 记住的词都是用掉整串键的（上屏时那一段的按键），拼不成小鹤音节的（apple → Apple）也一样放首位
+    // 记住的词都是用掉整串键的（上屏时那一段的按键），拼不成双拼音节的（apple → Apple）也一样放首位
     for t in memory.remembered(input) where !memory.isForgotten(input, t) {
         seen.insert(t)
         out.append(["text": t, "consume": keys.count])
@@ -170,8 +190,8 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
     }
     if let rime, complete {
         for t in rime.menu(input) where isHan(t) && !memory.isForgotten(input, t) {
-            // 小鹤：每个字两个键（末尾半个音节时以整串为限）；全拼：按苹果切出的音节对上
-            guard let c = Scheme.current == .xiaohe ? min(2 * t.count, keys.count) : r.consume(chars: t.count), seen.insert(t).inserted else { continue }
+            // 双拼：每个字两个键（末尾半个音节时以整串为限）；全拼：按苹果切出的音节对上
+            guard let c = Scheme.current.isDouble ? min(2 * t.count, keys.count) : r.consume(chars: t.count), seen.insert(t).inserted else { continue }
             out.append(["text": t, "consume": c])
         }
     }

@@ -116,4 +116,4 @@ luoke-ime try . --context "他在婚礼上许下了" --keys '{wait:15000}uiyj{wa
 
 随 LuokeIME.app 发布（`scripts/bundle-engines.sh` 组装：程序、rime_helper、雾凇词库，以及 librime 和它用到的动态库，放在 `lib/`）；在输入法菜单里选「小鹤双拼」。开发时把这个文件夹复制到 `~/.luoke/ime/engines/xiaohe`，会盖过包里的那份（用完挪走）。
 
-[全拼引擎](../quanpin)用的也是这里的代码，只是按键方案不同（`--scheme quanpin`）。两种方案的差别都在 `Scheme.swift`：一串按键怎么切成音节、每个候选用掉几个键、光标处怎么显示。
+[自然码双拼](../ziranma)和[全拼](../quanpin)引擎用的也是这里的代码，只是按键方案不同（`--scheme ziranma`、`--scheme quanpin`）。自然码和小鹤只差韵母的键位表（`Ziranma.swift`、`Xiaohe.swift`）；双拼和全拼的差别在 `Scheme.swift`：一串按键怎么切成音节、每个候选用掉几个键、光标处怎么显示。

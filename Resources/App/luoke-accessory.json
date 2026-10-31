@@ -3,7 +3,7 @@
   "accessory": "luoke-ime",
   "bundle_id": "ai.luoke.inputmethod.Luoke",
   "name": "螺壳输入法",
-  "version": "0.1.23",
+  "version": "0.1.35",
   "type": "input-method",
   "min_macos": "26",
   "entry": [],
@@ -16,6 +16,6 @@
   ],
   "data": ["~/.luoke/ime"],
   "capabilities": {
-    "listing": {"tagline": "小鹤双拼、全拼，本机模型帮你挑词、往下联想，从你打的字里学", "category": "输入"}
+    "listing": {"tagline": "小鹤、自然码双拼和全拼，本机模型帮你挑词、往下联想，从你打的字里学", "category": "输入"}
   }
 }

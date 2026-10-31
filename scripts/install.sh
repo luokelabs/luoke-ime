@@ -1,5 +1,5 @@
 #!/bin/zsh
-# 构建螺壳输入法（壳 + 自带的小鹤、全拼、个人化组件，见 docs/发布打包.md）、签名、装进 ~/Library/Input Methods 并注册。
+# 构建螺壳输入法（壳 + 自带的小鹤、自然码、全拼、个人化组件，见 docs/发布打包.md）、签名、装进 ~/Library/Input Methods 并注册。
 #
 #   scripts/install.sh                 构建、组装、签名、安装、注册
 #   LUOKE_SKIP_BUILD=1 …               用已有的 release 构建
@@ -36,6 +36,7 @@ mkdir -p "$c/MacOS" "$c/Resources"
 ditto "$root/Resources/App/Info.plist" "$c/Info.plist"
 ditto "$root/Resources/App/zh-Hans.lproj" "$c/Resources/zh-Hans.lproj"
 ditto "$root/Resources/App/en.lproj" "$c/Resources/en.lproj"
+ditto "$root/Resources/App/Guide" "$c/Resources/Guide"   # 添加引导里图文教程的截图
 ditto "$root/Resources/App/luoke-accessory.json" "$c/Resources/luoke-accessory.json"   # 给主控的配件清单（luoke-core V1 §8）
 ditto "$bin/LuokeIME" "$c/MacOS/LuokeIME"
 ditto "$bin/luoke-ime" "$c/MacOS/luoke-ime"
@@ -58,7 +59,8 @@ minos=$(/usr/libexec/PlistBuddy -c "Print LSMinimumSystemVersion" "$c/Info.plist
 too_new=$(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -r f; do
   file -b "$f" | grep -q Mach-O || continue
   v=$(otool -l "$f" | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; exit}')
-  [[ -n $v && $(printf '%s\n%s\n' "$v" "$minos" | sort -V | tail -1) != "$minos" ]] && print -r -- "$v ${f#$app/}"
+  # 用 if 不用 &&：最后一个文件没问题时 && 让整个循环以 1 结束，set -e 下脚本一声不吭就退出了
+  if [[ -n $v && $(printf '%s\n%s\n' "$v" "$minos" | sort -V | tail -1) != "$minos" ]]; then print -r -- "$v ${f#$app/}"; fi
 done)
 if [[ -n $too_new ]]; then print -u2 "这些程序要求的系统比 LSMinimumSystemVersion $minos 新："; print -u2 -- "$too_new"; exit 1; fi
 
@@ -68,7 +70,7 @@ timestamp=--timestamp=none
 [[ -n "$notarize" ]] && timestamp=--timestamp   # 公证要求可信时间戳
 signed=0
 if [[ "$identity" != "-" ]] && security find-identity -v -p codesigning | grep -qF "$identity"; then
-  # 由内向外：自带引擎里的每个 Mach-O（不跟随全拼链到小鹤的 lib/），再签壳的两个程序和整个 .app
+  # 由内向外：自带引擎里的每个 Mach-O（不跟随自然码、全拼链到小鹤的 lib/），再签壳的两个程序和整个 .app
   inner=("${(@f)$(find "$c/Resources/engines" -type f -perm -u+x -o -type f -name '*.dylib' | while read -r f; do
     if file -b "$f" | grep -q Mach-O; then print -r -- "$f"; fi; done)}")
   if codesign --force --options runtime $timestamp --sign "$identity" "${inner[@]}" >/dev/null 2>&1 &&
@@ -160,7 +162,7 @@ rm -rf "$swap"
 chmod go-rwx "$HOME/.luoke/ime"
 engines="$HOME/.luoke/ime/engines"
 mkdir -p "$engines"
-for e in xiaohe quanpin personal; do
+for e in xiaohe ziranma quanpin personal; do
   [[ -e "$engines/$e" ]] && print "注意：$engines/$e 会盖过包里自带的 $e（开发用；不需要了就挪走）"
 done
 
@@ -169,6 +171,6 @@ if [[ -z "${LUOKE_NO_REGISTER:-}" ]]; then
 fi
 print "螺壳已安装：$dest"
 print "第一次安装需要你在系统设置里手动添加一次（macOS 26 起，第三方输入法只能由用户确认启用）："
-print "  系统设置 → 键盘 → 文字输入 · 输入源 → 编辑… → + → 简体中文 → 螺壳（英文系统里叫 Luoke 螺壳）"
+print "  系统设置 → 键盘 → 文字输入 → 输入法 → 编辑… → + → 简体中文 → 螺壳（英文系统里叫 Luoke 螺壳）"
 print "  如果列表里没有：先完全退出系统设置（⌘Q）再打开——它只在打开时读一次输入源列表。"
 print "以后重装不用再添加。"

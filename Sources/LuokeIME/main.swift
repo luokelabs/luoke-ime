@@ -12,7 +12,7 @@ import LuokeShell
 //   LuokeIME --status                一行 JSON：注册了没有、用户添加了没有、能不能切过去（给主控的向导和诊断）
 //   LuokeIME --render-panel <out.png> [dark] [pending] [predict]   把候选窗画成图片（检查外观用；pending：画出"还在算"的小点；
 //                                                                  predict：画还没激活的联想）
-//   LuokeIME --render-guide <out.png> [added] [dark]   把添加输入源的引导窗口画成图片
+//   LuokeIME --render-guide <out.png> [added] [dark] [tutorial1|2|3]   把添加输入源的引导窗口画成图片
 //   LuokeIME --render-settings <out.png> [global|apps|privacy|tools] [dark]   把设置窗口的一页画成图片（检查外观用）
 
 let arguments = CommandLine.arguments
@@ -43,7 +43,9 @@ if let i = arguments.firstIndex(of: "--render-panel"), i + 1 < arguments.count {
 if let i = arguments.firstIndex(of: "--render-guide"), i + 1 < arguments.count {
     let rest = arguments.dropFirst(i + 2)
     _ = NSApplication.shared
-    exit(AddGuide.snapshot(to: URL(fileURLWithPath: arguments[i + 1]), added: rest.contains("added"), dark: rest.contains("dark")) ? 0 : 1)
+    let tutorial = rest.compactMap { $0.hasPrefix("tutorial") ? Int($0.dropFirst(8)).map { $0 - 1 } : nil }.first
+    exit(AddGuide.snapshot(to: URL(fileURLWithPath: arguments[i + 1]), added: rest.contains("added"), dark: rest.contains("dark"),
+                           tutorialStep: tutorial) ? 0 : 1)
 }
 if let i = arguments.firstIndex(of: "--render-settings"), i + 1 < arguments.count {
     let rest = arguments.dropFirst(i + 2)
@@ -59,7 +61,7 @@ let usage = """
 用法：LuokeIME --register | --select | --disable | --current | --status
       LuokeIME --render-panel <out.png> [dark] [pending] [predict]
       LuokeIME --render-settings <out.png> [global|apps|privacy|tools] [dark]
-      LuokeIME --render-guide <out.png> [added] [dark]
+      LuokeIME --render-guide <out.png> [added] [dark] [tutorial1|2|3]
 不带参数时作为输入法运行，只该由系统启动（从终端直接运行会退出）。
 
 """

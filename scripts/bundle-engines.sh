@@ -4,15 +4,16 @@
 #
 # - 小鹤：程序、rime_helper、雾凇词库（附 GPL 全文和上游提交号）、lib/librime.1.dylib（scripts/build-librime.sh 按 macOS 14
 #   编的，依赖静态链在里面，lua 插件也合并进去）。
-# - 全拼：自己的程序和 rime_helper，lib/ 和 vendor/ 链到小鹤的（同一份代码，不重复带 48 MB 的词库）。
+# - 自然码双拼、全拼：自己的程序和 rime_helper，lib/ 和 vendor/ 链到小鹤的（同一份代码，不重复带 48 MB 的词库）。
 # - 个人化组件：只有脚本，用主控的 Python 和主控带的 luoke_mem（engine.json 的 luoke-python）；不带本机打分（scorer.py）。
 # 只组装、临时签名：install.sh 之后用 Developer ID 由内向外重签所有 Mach-O。
 set -euo pipefail
 root=${0:A:h:h}
 out=${1:?用法：scripts/bundle-engines.sh <输出目录>}
-x=$root/engines/xiaohe q=$root/engines/quanpin p=$root/engines/personal
+x=$root/engines/xiaohe z=$root/engines/ziranma q=$root/engines/quanpin p=$root/engines/personal
 
 "$x/build.sh" >/dev/null
+"$z/build.sh" >/dev/null
 "$q/build.sh" >/dev/null
 # 个人化组件的测试：照并排的 luoke-mem 仓库带一份 luoke_mem 进 vendor/ 再跑（只给测试用，不进包：
 # 包里的组件用主控带的那份 luoke_mem，luoke-mem 的约定）
@@ -20,7 +21,7 @@ x=$root/engines/xiaohe q=$root/engines/quanpin p=$root/engines/personal
 [[ -f $x/vendor/rime-ice/double_pinyin_flypy.schema.yaml ]] || { print -u2 "没有雾凇词库：先跑 engines/xiaohe/build.sh"; exit 1; }
 
 rm -rf "$out"
-mkdir -p "$out/xiaohe" "$out/quanpin" "$out/personal"
+mkdir -p "$out/xiaohe" "$out/ziranma" "$out/quanpin" "$out/personal"
 
 # ---- 小鹤
 cp "$x/engine.json" "$x/xiaohe" "$x/rime_helper" "$out/xiaohe/"
@@ -38,11 +39,14 @@ if otool -L "$out/xiaohe/rime_helper" "$lib/librime.1.dylib" | tail -n +2 | grep
   print -u2 "rime_helper 或 librime 还引用了包外的动态库："; otool -L "$out/xiaohe/rime_helper" "$lib/librime.1.dylib" >&2; exit 1
 fi
 
-# ---- 全拼（和小鹤共用 lib/ 和词库）
+# ---- 自然码双拼、全拼（和小鹤共用 lib/ 和词库）
+cp "$z/engine.json" "$z/ziranma" "$out/ziranma/"
 cp "$q/engine.json" "$q/quanpin" "$out/quanpin/"
-cp "$out/xiaohe/rime_helper" "$out/quanpin/rime_helper"
-ln -s ../xiaohe/lib "$out/quanpin/lib"
-ln -s ../xiaohe/vendor "$out/quanpin/vendor"
+for e in ziranma quanpin; do
+  cp "$out/xiaohe/rime_helper" "$out/$e/rime_helper"
+  ln -s ../xiaohe/lib "$out/$e/lib"
+  ln -s ../xiaohe/vendor "$out/$e/vendor"
+done
 
 # ---- 个人化组件。发布版只经主控打分、没有本机退路：不带本机打分的 scorer.py，engine.json 去掉
 # GPU 权限和本机模型的选项（personal.py 找不到 scorer.py 时，选项 scorer 写什么都只经主控）
@@ -58,8 +62,8 @@ PY
 find "$out" -name __pycache__ -prune -exec rm -rf {} +
 
 # 改过装载路径的 Mach-O 原来的签名就失效了，Apple Silicon 上会被直接杀掉：先临时签上，能直接跑（install.sh 再用 Developer ID 重签）
-install_name_tool -delete_rpath "$root/vendor/librime/lib" "$out/quanpin/rime_helper" 2>/dev/null || true
-for f in "$lib"/*.dylib "$out"/xiaohe/{xiaohe,rime_helper} "$out"/quanpin/{quanpin,rime_helper}; do
+for e in ziranma quanpin; do install_name_tool -delete_rpath "$root/vendor/librime/lib" "$out/$e/rime_helper" 2>/dev/null || true; done
+for f in "$lib"/*.dylib "$out"/xiaohe/{xiaohe,rime_helper} "$out"/ziranma/{ziranma,rime_helper} "$out"/quanpin/{quanpin,rime_helper}; do
   codesign --force --sign - "$f" 2>/dev/null
 done
 

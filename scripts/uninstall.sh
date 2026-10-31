@@ -20,5 +20,5 @@ tmp="${TMPDIR:-/tmp}"
 rm -rf "${tmp%/}/luoke-ime" "${tmp%/}/ai.luoke.inputmethod.Luoke.lock"
 print "已卸载。引擎和数据还在 ~/.luoke/ime，不需要的话手动删除。"
 if (( still )); then
-  print "螺壳还在系统设置的输入源列表里：请到 系统设置 → 键盘 → 文字输入 · 输入源 → 编辑… 里选中它、按 − 移除。"
+  print "螺壳还在系统设置的输入法列表里：请到 系统设置 → 键盘 → 文字输入 → 输入法 → 编辑… 里选中它、按 − 移除。"
 fi

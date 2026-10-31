@@ -13,6 +13,8 @@ final class AddGuide: NSObject, NSWindowDelegate {
 
     final class Model: ObservableObject {
         @Published var added = false
+        /// 看图文教程时是第几步（从 0 起），nil 是没在看。
+        @Published var tutorialStep: Int?
     }
 
     let model = Model()
@@ -38,6 +40,7 @@ final class AddGuide: NSObject, NSWindowDelegate {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self, !self.model.added, EnabledWatch.consented() else { return }
             self.model.added = true
+            self.model.tutorialStep = nil
             SettingsWindow.allowFront()
             self.window?.orderFrontRegardless()
         }
@@ -69,10 +72,15 @@ final class AddGuide: NSObject, NSWindowDelegate {
         if !SettingsWindow.shared.isOpen { NSApp.setActivationPolicy(.prohibited) }
     }
 
-    /// 离屏画成图片（检查外观用：LuokeIME --render-guide <out.png> [added] [dark]）。
-    static func snapshot(to url: URL, added: Bool, dark: Bool) -> Bool {
+    /// 离屏画成图片（检查外观用：LuokeIME --render-guide <out.png> [added] [dark] [tutorial1|2|3]）。
+    /// 不在 app 包里跑时，图文教程的截图从当前目录的 Resources/App/Guide 读。
+    static func snapshot(to url: URL, added: Bool, dark: Bool, tutorialStep: Int? = nil) -> Bool {
         let model = Model()
         model.added = added
+        model.tutorialStep = tutorialStep
+        if Bundle.main.url(forResource: "step1", withExtension: "jpg", subdirectory: "Guide") == nil {
+            AddGuideView.guideDirectory = URL(fileURLWithPath: "Resources/App/Guide")
+        }
         let view = NSHostingView(rootView: AddGuideView(model: model, close: {}))
         view.frame = NSRect(x: 0, y: 0, width: 520, height: 470)
         view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -89,15 +97,31 @@ struct AddGuideView: View {
     let close: () -> Void
 
     static let keyboardSettings = URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!
-    /// 和主控完成页里输入法卡片的步骤一致（luoke-brand ui/screenshots/install-4.png，luokelabs/luoke-ime#14）
-    static let steps = ["打开键盘设置", "输入源 · 编辑…", "左下角 +", "简体中文", "螺壳", "添加"]
+    /// 用系统设置里的原词（简体中文系统里「Input Sources」叫「输入法」，在「文字输入」下面）；和主控完成页里输入法卡片的步骤一致（luoke-brand ui/screenshots/install-4.png，luokelabs/luoke-ime#14）
+    static let steps = ["打开键盘设置", "文字输入 · 输入法 · 编辑…", "左下角 +", "简体中文", "螺壳", "添加"]
+    /// 图文教程：每步一张系统设置的截图（app 包里的 Resources/Guide/step<N>.jpg，简体中文系统、浅色）配一句话。
+    static let tutorial = [
+        "打开系统设置的「键盘」，在「文字输入」下面找到「输入法」，点右边的「编辑…」。",
+        "在弹出的窗口里，点左下角的「+」。",
+        "左边选「简体中文」，右边选「螺壳」，点「添加」。回到列表里看到螺壳，点「完成」。",
+    ]
+    static var guideDirectory = Bundle.main.resourceURL?.appendingPathComponent("Guide")
+
+    static func tutorialImage(_ step: Int) -> NSImage? {
+        guard let url = guideDirectory?.appendingPathComponent("step\(step + 1).jpg") else { return nil }
+        return NSImage(contentsOf: url)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 20) {
-                header
-                card
-                hint
+                if let step = model.tutorialStep {
+                    tutorial(step)
+                } else {
+                    header
+                    card
+                    hint
+                }
             }
             .padding(.horizontal, 32)
             .padding(.top, 28)
@@ -129,6 +153,13 @@ struct AddGuideView: View {
                 Image(systemName: "keyboard").font(.system(size: 14)).foregroundStyle(Color.lkMuted)
                 Text("照这几步添加").font(.system(size: 14, weight: .medium))
                 Spacer()
+                if !model.added {
+                    Button { model.tutorialStep = 0 } label: {
+                        HStack(spacing: 4) { Image(systemName: "photo.on.rectangle").font(.system(size: 12)); Text("图文教程") }
+                            .font(.system(size: 13))
+                    }
+                    .buttonStyle(.borderless).foregroundStyle(Color.lkForeground)
+                }
                 if model.added {
                     LKBadge(text: "已添加", foreground: .lkSuccess, background: .lkSuccessSoft)
                 } else {
@@ -158,6 +189,45 @@ struct AddGuideView: View {
         .padding(16)
         .background(Color.lkCard, in: .rect(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.lkBorder, lineWidth: 1))
+    }
+
+    private func tutorial(_ step: Int) -> some View {
+        let count = Self.tutorial.count
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Button { model.tutorialStep = nil } label: {
+                    HStack(spacing: 4) { Image(systemName: "chevron.left").font(.system(size: 12)); Text("返回") }.font(.system(size: 13))
+                }
+                .buttonStyle(.borderless).foregroundStyle(Color.lkMuted)
+                Spacer()
+                Text("图文教程 · 第 \(step + 1) / \(count) 步").font(.system(size: 14, weight: .medium))
+                Spacer()
+                // 和左边的「返回」一样宽，让标题居中
+                Text("返回").font(.system(size: 13)).padding(.leading, 16).hidden()
+            }
+            Group {
+                if let image = Self.tutorialImage(step) {
+                    Image(nsImage: image).resizable().interpolation(.high).aspectRatio(contentMode: .fit)
+                        .clipShape(.rect(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.lkBorder, lineWidth: 1))
+                } else {
+                    Color.lkMutedBackground.clipShape(.rect(cornerRadius: 8))
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: 250)
+            Text(Self.tutorial[step]).font(.system(size: 13)).fixedSize(horizontal: false, vertical: true)
+                .frame(minHeight: 34, alignment: .top)
+            HStack {
+                Button("上一步") { model.tutorialStep = step - 1 }.disabled(step == 0)
+                Spacer()
+                if step + 1 < count {
+                    Button("下一步") { model.tutorialStep = step + 1 }
+                } else {
+                    Button("看完了") { model.tutorialStep = nil }
+                }
+            }
+            .controlSize(.regular)
+        }
     }
 
     /// 规范第 6 节的提示块：muted 底，圆角 10，13px，左侧一个图标。

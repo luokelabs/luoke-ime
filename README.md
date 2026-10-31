@@ -4,7 +4,7 @@
 
 一个 macOS 中文输入法：候选和苹果自带的一样快地出来，再由本机的小模型按你前面写的内容重新挑一遍；打的字不离开你的电脑。
 
-> **Luoke IME** is a minimal macOS Chinese input method (Xiaohe Shuangpin and Quanpin). Candidates come up instantly from Apple's converter and RIME, then a small on-device model re-ranks them by what you have already written and suggests what comes next. Nothing you type leaves your Mac. Full English version: [README.en.md](README.en.md).
+> **Luoke IME** is a minimal macOS Chinese input method (Xiaohe Shuangpin, Ziranma Shuangpin and Quanpin). Candidates come up instantly from Apple's converter and RIME, then a small on-device model re-ranks them by what you have already written and suggests what comes next. Nothing you type leaves your Mac. Full English version: [README.en.md](README.en.md).
 
 ## 它是什么
 
@@ -12,20 +12,20 @@
 
 自带的引擎：
 
-- [小鹤双拼](engines/xiaohe)、[全拼](engines/quanpin)：苹果的转换引擎和 RIME（雾凇词库）出候选，本机模型按前文逐词重排。在作者自己的博客语料（600 句）上，首选准确率约 90%，苹果自带的双拼是 78.8%（[出处](engines/xiaohe/README.md)）。
-- [个人化组件](engines/personal)：把上屏写进螺壳记忆、替小鹤和全拼向螺壳要模型打分、给联想。
+- [小鹤双拼](engines/xiaohe)、[自然码双拼](engines/ziranma)、[全拼](engines/quanpin)：苹果的转换引擎和 RIME（雾凇词库）出候选，本机模型按前文逐词重排。在作者自己的博客语料（600 句）上，首选准确率约 90%，苹果自带的双拼是 78.8%（[出处](engines/xiaohe/README.md)）。
+- [个人化组件](engines/personal)：把上屏写进螺壳记忆、替打字引擎向螺壳要模型打分、给联想。
 - [最小示例](examples/minimal)：十几行的 Python 查表引擎，写新引擎从这里开始。
 
 ## 现状
 
-- **封闭测试中**（beta1，输入法 0.1.20；`main` 上是 0.1.23）。
+- **封闭测试中**（beta1，输入法 0.1.20；`main` 上是 0.1.35）。
 - **系统要求**：Apple 芯片的 Mac，macOS 26 起。目前只在 macOS 26、27 上验证过。
 - 模型跑得多快看芯片：Pro、Max 芯片上几乎总能在按空格之前选好。M1 这类较慢的机器会少算几步，首选仍比苹果自带的准，详见[小鹤引擎的「慢的机器」](engines/xiaohe/README.md)。准确率、速度和联想的数字怎么测的、在哪类芯片上测的，见[评测](docs/评测.md)。螺壳没装或不可用时照常打字，候选就是苹果和 RIME 的，没有重排和联想。
-- 出候选的主力是 macOS 自带的苹果转换引擎（私有库 `libmecabra`），调用了它的非公开接口。系统升级后可能失效，失效时小鹤、全拼会停用并说明原因。
+- 出候选的主力是 macOS 自带的苹果转换引擎（私有库 `libmecabra`），调用了它的非公开接口。系统升级后可能失效，失效时小鹤、自然码、全拼会停用并说明原因。
 
 ## 怎么用
 
-到 [luoke.ai](https://luoke.ai) 下载螺壳，在螺壳的「应用」里开启螺壳输入法。装好后要在系统设置里手动添加一次输入源，螺壳会一步步带你做。
+到 [luoke.ai](https://luoke.ai) 下载螺壳，在螺壳的「应用」里开启螺壳输入法。装好后要在系统设置里手动添加一次（「键盘」→「文字输入」→「输入法」→「编辑…」），螺壳会一步步带你做。
 
 ## 从源码构建
 
@@ -45,7 +45,7 @@ swift test                                          # 状态机和引擎宿主�
 scripts/install.sh
 ```
 
-这一步会构建、组装自带的引擎、签名，然后装进 `~/Library/Input Methods`。没有 Developer ID 证书就用临时签名。第一次装好后要在系统设置的「键盘」里手动添加输入源。各引擎单独构建：`engines/xiaohe/build.sh`、`engines/quanpin/build.sh`，个人化组件 `engines/personal/build.sh`（要和本仓库并排放一份 [luoke-mem](https://github.com/luokelabs/luoke-mem)）。打包和签名的细节见[发布打包](docs/发布打包.md)。
+这一步会构建、组装自带的引擎、签名，然后装进 `~/Library/Input Methods`。没有 Developer ID 证书就用临时签名。第一次装好后要在系统设置的「键盘」→「文字输入」→「输入法」里手动添加螺壳。各引擎单独构建：`engines/xiaohe/build.sh`、`engines/quanpin/build.sh`，个人化组件 `engines/personal/build.sh`（要和本仓库并排放一份 [luoke-mem](https://github.com/luokelabs/luoke-mem)）。打包和签名的细节见[发布打包](docs/发布打包.md)。
 
 ## 写一个引擎
 

@@ -10,20 +10,20 @@ Luoke IME is a component of [Luoke](https://github.com/luokelabs/luoke). The inp
 
 Bundled engines:
 
-- [Xiaohe Shuangpin](engines/xiaohe) and [Quanpin](engines/quanpin): candidates come from Apple's converter and RIME (the rime-ice dictionary), then the on-device model re-ranks them word by word using the preceding text. On the author's own blog corpus (600 sentences), the first candidate is right about 90% of the time, against 78.8% for Apple's built-in Shuangpin ([source](engines/xiaohe/README.md)).
-- [Personalization component](engines/personal): writes committed text to Luoke Memory, asks Luoke for model scores on behalf of Xiaohe and Quanpin, and provides next-phrase suggestions.
+- [Xiaohe Shuangpin](engines/xiaohe), [Ziranma Shuangpin](engines/ziranma) and [Quanpin](engines/quanpin): candidates come from Apple's converter and RIME (the rime-ice dictionary), then the on-device model re-ranks them word by word using the preceding text. On the author's own blog corpus (600 sentences), the first candidate is right about 90% of the time, against 78.8% for Apple's built-in Shuangpin ([source](engines/xiaohe/README.md)).
+- [Personalization component](engines/personal): writes committed text to Luoke Memory, asks Luoke for model scores on behalf of the typing engines, and provides next-phrase suggestions.
 - [Minimal example](examples/minimal): a lookup-table engine in about a dozen lines of Python. Start here to write a new engine.
 
 ## Status
 
-- **In closed beta** (beta1 ships input method 0.1.20; `main` is at 0.1.23).
+- **In closed beta** (beta1 ships input method 0.1.20; `main` is at 0.1.35).
 - **Requirements**: a Mac with Apple silicon, macOS 26 or later. So far verified only on macOS 26 and 27.
 - How fast the model runs depends on the chip. On Pro and Max chips it almost always finishes before you press space. Slower machines such as the M1 run fewer steps, and the first candidate is still more accurate than Apple's; see "slow machines" in the [Xiaohe engine README](engines/xiaohe/README.md). How the accuracy, speed and suggestion numbers were measured, and on which chips, is in [docs/评测.md](docs/评测.md) (in Chinese). Without Luoke, or when it is unavailable, typing works as usual with candidates from Apple and RIME only, without re-ranking or suggestions.
-- Most candidates come from Apple's converter that ships with macOS (the private library `libmecabra`), called through non-public interfaces. A macOS update may break it. If that happens, Xiaohe and Quanpin turn themselves off and say why.
+- Most candidates come from Apple's converter that ships with macOS (the private library `libmecabra`), called through non-public interfaces. A macOS update may break it. If that happens, Xiaohe, Ziranma and Quanpin turn themselves off and say why.
 
 ## How to use it
 
-Download Luoke from [luoke.ai](https://luoke.ai) and turn on Luoke IME under Apps in Luoke. After installing, you add the input source once by hand in System Settings; Luoke walks you through it.
+Download Luoke from [luoke.ai](https://luoke.ai) and turn on Luoke IME under Apps in Luoke. After installing, you add the input source once by hand in System Settings (Keyboard → Text Input → Input Sources → Edit…); Luoke walks you through it.
 
 ## Building from source
 
@@ -43,7 +43,7 @@ To install it as your input method:
 scripts/install.sh
 ```
 
-This builds everything, assembles the bundled engines, signs the app and installs it into `~/Library/Input Methods`. Without a Developer ID certificate it signs ad hoc. After the first install, add the input source by hand under Keyboard in System Settings. Each engine also builds on its own: `engines/xiaohe/build.sh`, `engines/quanpin/build.sh`, and `engines/personal/build.sh` for the personalization component. The last one needs a checkout of [luoke-mem](https://github.com/luokelabs/luoke-mem) next to this repository. Packaging and signing details are in [docs/发布打包.md](docs/发布打包.md) (in Chinese).
+This builds everything, assembles the bundled engines, signs the app and installs it into `~/Library/Input Methods`. Without a Developer ID certificate it signs ad hoc. After the first install, add it by hand in System Settings under Keyboard → Text Input → Input Sources. Each engine also builds on its own: `engines/xiaohe/build.sh`, `engines/quanpin/build.sh`, and `engines/personal/build.sh` for the personalization component. The last one needs a checkout of [luoke-mem](https://github.com/luokelabs/luoke-mem) next to this repository. Packaging and signing details are in [docs/发布打包.md](docs/发布打包.md) (in Chinese).
 
 ## Writing an engine
 

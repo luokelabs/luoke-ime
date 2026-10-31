@@ -17,7 +17,7 @@ LUA_PLUGIN_COMMIT=ec52e48ea18f11af37717a01c337f853215cf70b
 
 # 编好的那份记着是按哪一版编的（$out/.luoke-version）：和这里钉住的对不上就连源码一起重来，
 # 免得包里的库和许可里写的版本不符
-want="librime $LIBRIME_TAG lua $LUA_PLUGIN_COMMIT"
+want="librime $LIBRIME_TAG lua $LUA_PLUGIN_COMMIT nopaths"
 if [[ -f $out/lib/librime.1.dylib && -z ${LUOKE_REBUILD:-} && "$(cat $out/.luoke-version 2>/dev/null)" == "$want" ]]; then
   print "librime 已经编好：$out（重编用 LUOKE_REBUILD=1）"; exit 0
 fi
@@ -38,6 +38,9 @@ fi
 export BOOST_ROOT=$src/librime/deps/boost-1.89.0
 [[ -d $BOOST_ROOT/boost ]] || { print -u2 "boost 头文件没就位：$BOOST_ROOT"; exit 1; }
 
+# 库里不带编译机的路径（用户名、目录）：源码路径（glog 的日志、断言里的 __FILE__）换成相对的；opencc 编进去的
+# 安装目录（PKGDATADIR，-D 在 CXXFLAGS 前面，这里 -U 掉）不要，librime 给 opencc 的都是绝对路径，用不上它
+export CFLAGS="${CFLAGS:-} -ffile-prefix-map=$root/=" CXXFLAGS="${CXXFLAGS:-} -ffile-prefix-map=$root/= -UPKGDATADIR"
 [[ -f lib/libglog.a ]] || make deps >/dev/null   # glog、leveldb、marisa、opencc、yaml-cpp 编成静态库，装进 librime 的 include/、lib/
 # 不经 Makefile 的 merged-plugins：要多传几个参数。不在 Homebrew 里找任何东西（它的库都是按本机系统编的），不要 gflags（只给命令行工具用）
 rm -rf build

@@ -187,7 +187,7 @@ final class SettingsModel: ObservableObject {
     // MARK: 引擎、记忆（不在设置文件里的状态）
 
     var typingEngines: [(id: String, name: String)] {
-        preview ? [("xiaohe", "小鹤双拼"), ("quanpin", "全拼")] : manager.typingEntries.map { ($0.id, $0.manifest?.name ?? $0.id) }
+        preview ? [("xiaohe", "小鹤双拼"), ("ziranma", "自然码双拼"), ("quanpin", "全拼")] : manager.typingEntries.map { ($0.id, $0.manifest?.name ?? $0.id) }
     }
 
     var currentEngine: String? { preview ? "xiaohe" : manager.typing?.id }
