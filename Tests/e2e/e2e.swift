@@ -6,7 +6,7 @@
 //
 // 用例每行：名称 \t 按键脚本 \t 期望输入框里的文字。按键脚本和 `luoke-ime try --keys` 一样：
 // 普通字符照打，{space} {tab} {lbrace} {rbrace} {enter} {bs} {esc} {left} {right} {up} {down} {shift}（单按 Shift）
-// {forget}（Shift+⌫） {wait:200} {probe}（记下此刻输入框、光标处的正在输入文字、候选窗是否可见）。
+// {forget}（Shift+⌫） {wait:200} {hold:2000}（按住右 ⌥ 2 秒，触发 hold 模式的快捷键引擎） {probe}（记下此刻输入框、光标处的正在输入文字、候选窗是否可见）。
 //
 // 需要辅助功能权限（从 ssh 用 `open -a Terminal run.command` 启动，借用终端的授权）。
 // 测试期间不要碰键盘鼠标；每发一个键前都核对焦点仍在被测应用里，不在就立即中止。
@@ -177,6 +177,20 @@ func shiftTap() {
     up.post(tap: .cghidEventTap)
 }
 
+/// 按住右 ⌥ 若干秒再松开（快捷键引擎用 hold 模式的右 ⌥ 时触发它）。0x40 是设备相关的右 ⌥ 位。
+func holdRightOption(_ seconds: Double) {
+    guardFront("hold")
+    let down = CGEvent(keyboardEventSource: nil, virtualKey: 61, keyDown: true)!
+    down.type = .flagsChanged
+    down.flags = [.maskAlternate, CGEventFlags(rawValue: 0x40)]
+    let up = CGEvent(keyboardEventSource: nil, virtualKey: 61, keyDown: false)!
+    up.type = .flagsChanged
+    up.flags = []
+    down.post(tap: .cghidEventTap)
+    wait(seconds)
+    up.post(tap: .cghidEventTap)
+}
+
 /// 螺壳进程有没有在屏幕上的浮动窗口（候选窗）。窗口所有者名是应用的显示名（螺壳 / Luoke），所以按进程号认。
 func frame(_ e: AXUIElement) -> [Int]? {
     guard let p = attr(e, kAXPositionAttribute as String), let z = attr(e, kAXSizeAttribute as String) else { return nil }
@@ -279,6 +293,7 @@ func run(_ script: String, gap: useconds_t = 40_000) -> [[String: Any]] {
                 probes.append(probe)
             default:
                 if name.hasPrefix("wait:"), let ms = Double(name.dropFirst(5)) { wait(ms / 1000) }
+                if name.hasPrefix("hold:"), let ms = Double(name.dropFirst(5)) { holdRightOption(ms / 1000) }
             }
         } else {
             if let (k, shift) = keyCodes[c] { post(k, flags: shift ? .maskShift : []) }

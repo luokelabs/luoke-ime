@@ -67,7 +67,7 @@ public final class AskBroker {
     }
 
     /// 引擎能问个人化组件的方法。predict 用的是用户写过的历史，只有壳自己能问。
-    public static let engineMethods: Set<String> = ["score", "ping"]
+    public static let engineMethods: Set<String> = ["score", "ping", "hotwords"]
 
     /// 主控的客户端（to: "hub" 的转问经它转过去）；nil 时这类转问答 unavailable。
     public var hub: HubClient? {
@@ -110,12 +110,18 @@ public final class AskBroker {
         case .hub:
             guard let hub else { return fail("unavailable", "主控（luoke-core）还没接上") }
             guard let req = Self.hubRequest(a) else {
-                return fail("bad_request", "主控的转问只认 score（params 带 task、context、candidates，task 要是 luoke-ime. 开头）、continue（task、context，可带 k、max_tokens、stop）、predict（task、context）、tasks、warmup")
+                return fail("bad_request", "主控的转问只认 score（params 带 task、context、candidates，task 要是 luoke-ime. 开头）、continue（task、context，可带 k、max_tokens、stop）、predict（task、context）、generate（task、messages）、transcribe（task、session、want）、tasks、warmup")
             }
             hubQueue.async { [weak self] in
                 let reply: Reply
                 if a.method == "score", let self {
                     reply = self.score(a, hub: hub, request: req)
+                } else if a.method == "generate" {
+                    // 生成要说是用户在等还是后台（V1 §2）；引擎没说就是用户在等（整理语音是松开键以后、上屏之前）
+                    var priority = "user-waiting"
+                    if case let .string(p)? = a.params["priority"], ["user-waiting", "background"].contains(p) { priority = p }
+                    reply = Self.generateReply(a.id, hub.request(req.method, req.path, body: req.body, timeout: req.timeout,
+                                                                 headers: ["X-Luoke-Priority": priority]))
                 } else {
                     reply = Self.hubReply(a.id, hub.request(req.method, req.path, body: req.body, timeout: req.timeout))
                 }
@@ -125,6 +131,8 @@ public final class AskBroker {
             guard Self.engineMethods.contains(a.method) else {
                 return fail("not_allowed", "引擎只能问个人化组件 " + Self.engineMethods.sorted().joined(separator: "、") + "（联想只有壳能问）")
             }
+            // 热词是记忆里的常用说法：只给随输入法发布的引擎（语音），第三方引擎拿不到
+            guard a.method != "hotwords" || !c.thirdParty else { return fail("not_allowed", "第三方引擎不能要热词（那是记忆里的内容）") }
             guard personalAllowed else { return fail("unavailable", "现在不能把输入交给个人化组件（安全输入、禁止记录的应用、暂停或没允许保存到记忆）") }
             guard let p = personal, p !== c, p.state == .running else { return fail("unavailable", "没有在运行的个人化组件") }
             let now = ProcessInfo.processInfo.systemUptime
@@ -182,9 +190,24 @@ public final class AskBroker {
             return ("POST", "/tasks/\(t)/v1/predict", .object(body), 2)
         case "tasks":
             return ("GET", "/tasks", nil, 5)
+        case "generate":
+            // 生成（OpenAI chat/completions，主控一律流式）：提示词是发问的引擎自己的，壳不看；等整段生成完拼成一段答回去
+            guard let t = task(), case .array? = a.params["messages"] else { return nil }
+            var body: [String: JSONValue] = ["messages": a.params["messages"]!, "stream": .bool(true)]
+            if let f = a.params["response_format"] { body["response_format"] = f }
+            return ("POST", "/tasks/\(t)/v1/chat/completions", .object(body), 30)
+        case "transcribe":
+            // 语音转写（一次听写一个会话，音频按块追加；V1 §2 /v1/transcribe）：字段原样转，壳不看音频和文字。
+            // 终稿要等模型，冷的时候主控先答 not_ready，所以给得宽一些
+            guard let t = task(), a.params["session"] != nil, a.params["want"] != nil else { return nil }
+            var body: [String: JSONValue] = [:]
+            for k in ["session", "seq", "audio", "want", "context"] { if let v = a.params[k] { body[k] = v } }
+            return ("POST", "/tasks/\(t)/v1/transcribe", .object(body), 10)
         case "warmup":
             guard let t = task() else { return nil }
-            return ("POST", "/warmup", .object(["task": .string(t)]), 5)
+            var body: [String: JSONValue] = ["task": .string(t)]
+            if let l = a.params["lease_id"] { body["lease_id"] = l } // 续期
+            return ("POST", "/warmup", .object(body), 5)
         default:
             return nil
         }
@@ -238,6 +261,24 @@ public final class AskBroker {
     }
 
     /// 主控的答复 → 转问的答复：成功时原样给 result；拒绝时 error 带主控的 code、message、retry_after；连不上答 unavailable。
+    /// 生成的答复是流式的（server-sent events，每行 `data: {…}`，最后 `data: [DONE]`）：把各块的 delta.content 拼起来，
+    /// 答 `{"text", "model"}`。出错照 hubReply。
+    static func generateReply(_ id: Int, _ r: Result<HubClient.Response, HubClient.Failure>) -> Reply {
+        guard case let .success(resp) = r, resp.status < 400 else { return hubReply(id, r) }
+        var text = "", model: JSONValue = .null
+        for line in String(decoding: resp.body, as: UTF8.self).split(separator: "\n") where line.hasPrefix("data:") {
+            let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
+            guard payload != "[DONE]", let d = payload.data(using: .utf8),
+                  let o = (try? JSONSerialization.jsonObject(with: d)).map(JSONValue.init), case let .object(chunk) = o else { continue }
+            if let m = chunk["model"] { model = m }
+            if case let .array(choices)? = chunk["choices"], case let .object(c)? = choices.first,
+               case let .object(delta)? = c["delta"], case let .string(piece)? = delta["content"] {
+                text += piece
+            }
+        }
+        return Reply(id: id, result: .object(["text": .string(text), "model": model]))
+    }
+
     static func hubReply(_ id: Int, _ r: Result<HubClient.Response, HubClient.Failure>) -> Reply {
         switch r {
         case let .success(resp) where resp.status < 400:

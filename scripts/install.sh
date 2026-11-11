@@ -40,7 +40,9 @@ ditto "$root/Resources/App/Guide" "$c/Resources/Guide"   # 添加引导里图文
 ditto "$root/Resources/App/luoke-accessory.json" "$c/Resources/luoke-accessory.json"   # 给主控的配件清单（luoke-core V1 §8）
 ditto "$bin/LuokeIME" "$c/MacOS/LuokeIME"
 ditto "$bin/luoke-ime" "$c/MacOS/luoke-ime"
-swift "$root/scripts/make-icon.swift" "$c/Resources/MenuIcon.pdf"   # 菜单栏的小图标：方框里一个"螺"的模板图
+# 去掉调试符号：里面记着编译机上源码和中间文件的路径（崩溃符号化用 .build 里的 dSYM）
+strip -S "$c/MacOS/LuokeIME" "$c/MacOS/luoke-ime"
+swift "$root/scripts/make-icon.swift" "$c/Resources/MenuIcon.pdf"   # 菜单栏的小图标：实心圆角长方形里镂空一个"螺"的模板图
 # app 图标（Finder、系统设置里看到的）：从 Resources/App/AppIcon.png（1024×1024，换 logo 就换这张）生成 .icns
 iconset="$tmp/AppIcon.iconset"
 mkdir -p "$iconset"
@@ -64,6 +66,9 @@ too_new=$(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \) | while read -
 done)
 if [[ -n $too_new ]]; then print -u2 "这些程序要求的系统比 LSMinimumSystemVersion $minos 新："; print -u2 -- "$too_new"; exit 1; fi
 
+# 编译机的路径不进包：自带引擎在 bundle-engines.sh 里查过，这里再查整个 .app（壳的两个程序也在里面）
+if grep -rlaF "$root/" "$app" >&2; then print -u2 "上面的文件里还有编译机的路径：$root/"; exit 1; fi
+
 identity="${LUOKE_SIGN_IDENTITY:-Developer ID Application: Huanqing Lou (NJQ5W3T9K5)}"
 notarize=${LUOKE_NOTARIZE:-}
 timestamp=--timestamp=none
@@ -73,7 +78,10 @@ if [[ "$identity" != "-" ]] && security find-identity -v -p codesigning | grep -
   # 由内向外：自带引擎里的每个 Mach-O（不跟随自然码、全拼链到小鹤的 lib/），再签壳的两个程序和整个 .app
   inner=("${(@f)$(find "$c/Resources/engines" -type f -perm -u+x -o -type f -name '*.dylib' | while read -r f; do
     if file -b "$f" | grep -q Mach-O; then print -r -- "$f"; fi; done)}")
+  # 语音引擎自己录音，要带麦克风那一项（engine.json 声明了 microphone 的自带引擎只有它）
   if codesign --force --options runtime $timestamp --sign "$identity" "${inner[@]}" >/dev/null 2>&1 &&
+     codesign --force --options runtime $timestamp --entitlements "$root/Resources/App/microphone-engine.entitlements.plist" \
+       --sign "$identity" "$c/Resources/engines/voice/voice" >/dev/null 2>&1 &&
      codesign --force --options runtime $timestamp --entitlements "$root/Resources/App/entitlements.plist" \
        --sign "$identity" "$c/MacOS/luoke-ime" "$app" >/dev/null 2>&1; then
     signed=1

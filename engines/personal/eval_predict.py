@@ -6,7 +6,7 @@
   ./eval_predict.py 语料.tsv --hub <主控的 socket>     经主控的联想任务（luoke-ime.predict）续写，不起本机的模型
   --result FILE  照 luoke-core V1 的证据格式写一份 JSON（不带语料原文），给主控的发布脚本读
 
-按个人化组件挑联想的办法（personal.model_candidates），对几个把握门槛（模型对下一个词的把握）分别报：
+按个人化组件挑联想的办法（personal.picked），对几个把握门槛（模型对下一个词的把握）分别报：
 多少次给出了联想（壳会提示 ⇥）、给出时第一个就对的比例、前三个里有对的比例、所有询问里前三个有对的比例，以及每次用时。
 """
 import argparse
@@ -136,6 +136,8 @@ def collect(args, rows, gen):
         cont = gen(ctx)
         ms.append((time.perf_counter() - t) * 1000)
         results.append((gold, cont))
+        if len(results) % 50 == 0:  # 进度走标准错误：主控的发布脚本按它判断是不是停住了（不是慢）
+            print(f"进度 {len(results)}/{len(rows)}", file=sys.stderr, flush=True)
         if dump:
             dump.write(json.dumps({"ctx": ctx[-30:], "gold": gold, "cont": cont}, ensure_ascii=False) + "\n")
     return results, ms
@@ -153,7 +155,7 @@ def report(args, rows, results, ms, combo):
     for gate in GATES:
         shown = top1 = top3 = 0
         for gold, cont in results:
-            items = personal.model_candidates(cont, gate)[:3]
+            items = personal.picked(cont, gate=gate)[:3]
             if not items:
                 continue
             shown += 1
@@ -167,11 +169,15 @@ def report(args, rows, results, ms, combo):
         import evidence
         items = []
         for i, ((gold, cont), r, t) in enumerate(zip(results, rows, ms_each)):
-            got = personal.model_candidates(cont)[:3]
+            got = personal.picked(cont)[:3]
             items.append({"i": i, "category": r[0], "shown": bool(got), "top1": bool(got) and gold.startswith(got[0]),
                           "top3": any(gold.startswith(c) for c in got), "ms": round(t)})
         g = gates[str(personal.MODEL_GATE)]
         score = dict(g, gate=personal.MODEL_GATE, gates=gates)
+        # 硬性条目：联想全坏（不出、或出的几乎都不对）时不能只算回退。单字的不给以后，出时第一个对从 41% 降到约 26%
+        # （少的是单字的，省不了键）
+        score["floors"] = {"shown_pct": 3, "top1_when_shown_pct": 25}
+        score["hard_ok"] = all(g[k] >= v for k, v in score["floors"].items())
         evidence.write(args.result, TASK, args.corpus, combo, score, {"p50_ms": round(ms[n // 2]), "p90_ms": round(ms[int(n * 0.9)])}, items)
 
 

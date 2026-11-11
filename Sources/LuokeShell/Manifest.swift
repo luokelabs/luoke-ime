@@ -30,6 +30,8 @@ public struct Manifest: Equatable {
         public enum Mode: String { case hold, press }
         public var key: Key
         public var mode: Mode
+        /// hold 模式下按下就发 `arm`，让引擎先开始准备（比如录音），确认是按住了再发 `start`（语音：不丢开头）。
+        public var arm = false
     }
 
     public struct Permissions: Equatable {
@@ -127,7 +129,13 @@ public struct Manifest: Equatable {
             guard let mode = (h["mode"] as? String).flatMap(Hotkey.Mode.init(rawValue:)) else {
                 throw ManifestError("hotkey.mode 只能是 hold 或 press")
             }
-            manifest.hotkey = Hotkey(key: key, mode: mode)
+            var hotkey = Hotkey(key: key, mode: mode)
+            if let a = h["arm"] {
+                guard let b = a as? NSNumber, CFGetTypeID(b) == CFBooleanGetTypeID() else { throw ManifestError("hotkey.arm 必须是 true 或 false") }
+                guard mode == .hold || !b.boolValue else { throw ManifestError("hotkey.arm 只用于 hold 模式") }
+                hotkey.arm = b.boolValue
+            }
+            manifest.hotkey = hotkey
         case .personal:
             break
         }

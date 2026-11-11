@@ -8,7 +8,7 @@ cd $here
 # 部署目标 macOS 14（和 LuokeIME.app 一样）：不写就是本机的系统版本，装到更老的系统上起不来
 export MACOSX_DEPLOYMENT_TARGET=14.0
 lib=$root/vendor/librime
-[[ -f $lib/lib/librime.1.dylib ]] || $root/scripts/build-librime.sh
+$root/scripts/build-librime.sh   # 编好的版本对得上就跳过
 swiftc -O -target arm64-apple-macos$MACOSX_DEPLOYMENT_TARGET -o xiaohe *.swift
 cc -O2 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET -o rime_helper rime_helper.c -I$lib/include -L$lib/lib -lrime \
   -Wl,-rpath,@loader_path/lib -Wl,-rpath,$lib/lib

@@ -428,6 +428,26 @@ import Testing
         #expect(!c.auto)
     }
 
+    @Test func 以词定字_方括号取高亮候选的头一个或最后一个字() {
+        let r = Rig()
+        r.type("wobuzd")
+        r.elapse(0.01)
+        r.type("[")
+        #expect(r.client.document == "我")
+        guard case let .committed(c)? = r.channel.sent.last else { Issue.record("最后一条不是上屏反馈"); return }
+        #expect(c.pieces == [Piece(input: "wobuzd", text: "我", index: 0, top: "我不知道", char: "first")])
+        r.type("wobuzd")
+        r.elapse(0.01)
+        r.type("]")
+        #expect(r.client.document == "我道")
+    }
+
+    @Test func 以词定字_没在输入时方括号照常是标点() {
+        let r = Rig()
+        r.type("[")
+        #expect(r.client.document == "【")
+    }
+
     @Test func 上屏后紧接着的退格() {
         let r = Rig()
         r.type("wobuzd")
@@ -602,6 +622,48 @@ import Testing
         #expect(r.press(.character("a")) == false)
     }
 
+    @Test func 第一次用时的提示留到这一段打完() {
+        let r = Rig()
+        r.session.setFirstUseNotice("从你打的字里学")
+        #expect(r.client.view.notice == "从你打的字里学")
+        r.type("wo")
+        r.elapse(0.01)
+        #expect(r.client.view.candidates.first?.text == "我")
+        #expect(r.client.view.notice == "从你打的字里学")
+        r.press(.space)
+        #expect(r.client.document == "我")
+        #expect(r.client.view.notice == nil)
+    }
+
+    @Test func 第一次用时的提示打完一段才算提示过_没打字切走不算() {
+        let r = Rig()
+        var seen = 0
+        r.session.onFirstUseNoticeSeen = { seen += 1 }
+        r.session.setFirstUseNotice("从你打的字里学")
+        r.session.focusLost()
+        r.session.cancelComposition()
+        #expect(seen == 0)
+        r.session.setFirstUseNotice("从你打的字里学") // 下次进输入框宿主再给
+        r.type("wo")
+        r.elapse(0.01)
+        #expect(seen == 0)
+        r.press(.space)
+        #expect(seen == 1)
+        r.type("wo")
+        r.elapse(0.01)
+        r.press(.space)
+        #expect(seen == 1)
+    }
+
+    @Test func 第一次用时的提示切走再回来还在() {
+        let r = Rig()
+        r.session.setFirstUseNotice("从你打的字里学")
+        r.session.focusLost()
+        r.type("wo")
+        r.elapse(0.01)
+        #expect(r.client.view.notice == "从你打的字里学")
+    }
+
     @Test func 引擎重新启动后重新询问() {
         let r = Rig(script: { _ in [] })
         r.type("wo")
@@ -623,12 +685,16 @@ import Testing
 }
 
 @Suite struct 快捷键引擎 {
-    static func rig(mode: Manifest.Hotkey.Mode) -> (Rig, FakeChannel) {
+    static func rig(mode: Manifest.Hotkey.Mode, arm: Bool = false, microphone: Bool = false) -> (Rig, FakeChannel) {
         let r = Rig()
         let ch = FakeChannel(clock: r.clock)
+        var hotkey = Manifest.Hotkey(key: .rightCommand, mode: mode)
+        hotkey.arm = arm
+        var perms = Manifest.Permissions()
+        perms.microphone = microphone
         let m = Manifest(protocolVersion: 1, name: "语音", kind: .hotkey, run: ["x"], inputKeys: [], punctuation: .default,
-                         context: 0, app: false, feedback: false, hotkey: .init(key: .rightCommand, mode: mode),
-                         permissions: .init(), options: nil)
+                         context: 0, app: false, feedback: false, hotkey: hotkey,
+                         permissions: perms, options: nil)
         r.session.hotkeys = [HotkeyEngine(manifest: m, channel: ch)]
         return (r, ch)
     }
@@ -693,6 +759,122 @@ import Testing
         #expect(r.client.document == "我")
         #expect(r.session.isInHotkeySession)
         _ = ch
+    }
+
+    @Test func 声明了arm的按下就发arm_确认按住后用同一个号发start() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true)
+        r.press(.modifierDown(.rightCommand))
+        guard case let .arm(id)? = ch.sent.first else { Issue.record("按下没有发 arm"); return }
+        r.elapse(0.2)
+        #expect(ch.sent.count == 2)
+        guard case let .start(sid, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+        #expect(sid == id)
+        r.press(.modifierUp(.rightCommand))
+        #expect(ch.sent.last == .stop(id: id))
+    }
+
+    @Test func 发了arm_没按够就松开或按了组合键_取消() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true)
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.05)
+        r.press(.modifierUp(.rightCommand))
+        guard case let .arm(a)? = ch.sent.first else { Issue.record("没有发 arm"); return }
+        #expect(ch.sent.last == .cancel(id: a, reason: .short))
+        r.press(.modifierDown(.rightCommand))
+        guard case let .arm(b)? = ch.sent.last else { Issue.record("第二次没有发 arm"); return }
+        r.press(.character("c"), [.command])
+        #expect(ch.sent.last == .cancel(id: b, reason: .key))
+        r.elapse(0.3)
+        #expect(!ch.sent.contains { if case .start = $0 { return true } else { return false } })
+    }
+
+    @Test func 同一次按下来了两个按下事件_只发一个arm() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true)
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.07)
+        r.press(.modifierDown(.rightCommand))
+        #expect(ch.sent.count == 1)
+        guard case let .arm(id)? = ch.sent.first else { Issue.record("没有发 arm"); return }
+        r.elapse(0.2)
+        guard case let .start(sid, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+        #expect(sid == id)
+    }
+
+    @Test func 密码框里不触发_也不发arm() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true)
+        r.client.isSecureInput = true
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.3)
+        r.press(.modifierUp(.rightCommand))
+        #expect(ch.sent.isEmpty)
+        #expect(!r.session.isInHotkeySession)
+    }
+
+    @Test func 用麦克风的按住时一直提示正在听_松开后显示识别中() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true, microphone: true)
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.2)
+        #expect(r.client.view.notice == "正在听")
+        #expect(r.client.view.voice == .listening)
+        guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+        ch.push(.show(id: id, text: "今天"))
+        r.elapse(0.01)
+        #expect(r.client.view.notice == "正在听") // 出了草稿也一直提示
+        r.press(.modifierUp(.rightCommand))
+        #expect(r.client.view.notice == "识别中…")
+        #expect(r.client.view.voice == .working)
+        ch.push(.commit(id: id, text: "今天开会。"), after: 0.3)
+        r.elapse(0.5)
+        #expect(r.client.view.notice == nil)
+        #expect(r.client.view.voice == nil)
+        #expect(r.client.document == "今天开会。")
+    }
+
+    @Test func 开了中英文加空格_一整句里面的交界也加() {
+        for on in [true, false] {
+            let (r, ch) = Self.rig(mode: .hold, arm: true, microphone: true)
+            r.session.settings.autoSpace = on
+            r.press(.modifierDown(.rightCommand))
+            r.elapse(0.2)
+            guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+            ch.push(.show(id: id, text: "把PR发到GitHub上"))
+            r.elapse(0.01)
+            #expect(r.client.view.marked == (on ? "把 PR 发到 GitHub 上" : "把PR发到GitHub上"))
+            r.press(.modifierUp(.rightCommand))
+            ch.push(.commit(id: id, text: "把PR发到GitHub上，3点开会。"), after: 0.1)
+            r.elapse(0.3)
+            #expect(r.client.document == (on ? "把 PR 发到 GitHub 上，3 点开会。" : "把PR发到GitHub上，3点开会。"))
+        }
+    }
+
+    @Test func 引擎给了提示就显示它() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true, microphone: true)
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.2)
+        guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+        r.press(.modifierUp(.rightCommand))
+        #expect(r.client.view.notice == "识别中…")
+        ch.push(.show(id: id, text: "我们周四见面", hint: "整理中…"))
+        r.elapse(0.01)
+        #expect(r.client.view.notice == "整理中…")
+    }
+
+    @Test func 话筒还没开始收音时显示准备中_开始收音后变成正在听() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true, microphone: true)
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.2)
+        guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+        #expect(r.client.view.voice == .listening) // 引擎没说，照在听算
+        ch.push(.show(id: id, text: "", listening: false))
+        r.elapse(0.01)
+        #expect(r.client.view.voice == .preparing && r.client.view.notice == "准备中…")
+        ch.push(.show(id: id, text: "", listening: true))
+        r.elapse(0.01)
+        #expect(r.client.view.voice == .listening && r.client.view.notice == "正在听")
+        ch.push(.show(id: id, text: "", listening: false))
+        r.elapse(0.01)
+        r.press(.modifierUp(.rightCommand))
+        #expect(r.client.view.voice == .working && r.client.view.notice == "识别中…") // 松开了就不再是准备中
     }
 
     @Test func 停止后迟迟没有结果按超时结束() {
@@ -845,6 +1027,14 @@ import Testing
         #expect(back.memoryConsent == ["personal"])
         #expect(back.memoryAsked == ["personal", "other"])
         #expect(ShellConfig().memoryConsent.isEmpty) // 默认没同意
+    }
+
+    @Test func 快捷键的arm只用于hold() throws {
+        let hotkey = { (h: String) in Data(#"{"protocol":1,"name":"x","kind":"hotkey","run":["x"],"hotkey":\#(h)}"#.utf8) }
+        #expect(try Manifest.parse(hotkey(#"{"key":"right_option","mode":"hold","arm":true}"#)).hotkey?.arm == true)
+        #expect(try Manifest.parse(hotkey(#"{"key":"right_option","mode":"hold"}"#)).hotkey?.arm == false)
+        #expect(throws: ManifestError.self) { try Manifest.parse(hotkey(#"{"key":"right_option","mode":"press","arm":true}"#)) }
+        #expect(throws: ManifestError.self) { try Manifest.parse(hotkey(#"{"key":"right_option","mode":"hold","arm":1}"#)) }
     }
 
     @Test func 合法的额外可写位置() throws {
@@ -1127,6 +1317,27 @@ import Testing
         let kinds = p.sent.compactMap { if case let .committed(c) = $0 { return c.kind } else { return nil } }
         #expect(kinds == [.typing, .predict])
         #expect(pr.asked.last?.context == "今天我觉得")
+    }
+
+    @Test func 使用计数_只记次数_密码框和禁止记录时不记() {
+        let (r, pr, _) = Self.rig()
+        let usage = Usage(url: nil)
+        r.session.usage = usage
+        Self.commitWo(r)
+        r.session.receivePredictions(id: pr.asked[0].id, items: ["们", "觉得"])
+        r.press(.tab)
+        r.press(.character("2"))
+        r.press(.backspace)
+        r.press(.backspace)  // 同一次上屏后的退格只算一次
+        let t = usage.total(lastDays: 1)
+        #expect(t == [.commit: 1, .pickFirst: 1, .predictShown: 1, .predictOpened: 1, .predictPicked: 1, .predictChars: 2, .backspaceAfterCommit: 1])
+        r.type("x")
+        r.client.mayRecord = false
+        Self.commitWo(r)
+        r.client.mayRecord = true
+        r.client.isSecureInput = true
+        Self.commitWo(r)
+        #expect(usage.total(lastDays: 1)[.commit] == 1)
     }
 
     @Test func 上屏后停够了才问_期间接着打就不问() {

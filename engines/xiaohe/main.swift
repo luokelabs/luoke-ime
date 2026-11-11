@@ -79,6 +79,10 @@ do {
 if CommandLine.arguments.contains("--selftest") {
     let sample = ["xiaohe": "woxliifj", "ziranma": "woxdiifj", "quanpin": "woxiangchifan"][Scheme.current.rawValue]!
     let r = reading(sample)
+    if Scheme.current == .xiaohe { // 打错纠正：xl 打成了 zl
+        let typo = Array("wozliifj")
+        guard Typo.firstBad(typo) == 2, Typo.edits(typo, from: 0, to: 4).contains("woxliifj") else { print("自检没过：打错纠正"); exit(1) }
+    }
     print("自检通过（\(Scheme.current.name)）：\(sample) → \(r.display) → \(r.candidates.first?.text ?? "无")")
     exit(0)
 }
@@ -118,6 +122,7 @@ var roundsOption: Int?
 /// pause_when：slow（只在主控标了 slow 的机器上，默认）或 always。
 var pauseOption = 0.0
 var pauseAlways = false
+var correctOption = true // 选项 correct：打错纠正（Typo.swift），评测对照用
 var budget: Budget {
     var b: Budget
     switch budgetOption {
@@ -140,7 +145,11 @@ func startHelpers(_ options: [String: Any]) {
     roundsOption = options["rounds"] as? Int
     pauseOption = (options["pause"] as? Double) ?? Double(options["pause"] as? Int ?? 0)
     pauseAlways = options["pause_when"] as? String == "always"
-    if options["rime"] as? Bool ?? true { rime = Rime(engineDir: engineDir, dataDir: dataDir) }
+    correctOption = options["correct"] as? Bool ?? true
+    let fuzzy = (options["fuzzy"] as? [String] ?? []).map { $0.components(separatedBy: "_") }.filter { $0.count == 2 }
+    mecabra.enableFuzzy(fuzzy)
+    fuzzyPairs = Set(fuzzy.map { $0.joined(separator: "_") })
+    if options["rime"] as? Bool ?? true { rime = Rime(engineDir: engineDir, dataDir: dataDir, fuzzy: fuzzy) }
     scorer.enabled = options["rerank"] as? Bool ?? true
     _ = scorer.isReady // 先问一次能不能打分，第一个询问来的时候多半已经知道了
 }
@@ -195,6 +204,11 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
             out.append(["text": t, "consume": c])
         }
     }
+    // 日期、时间、星期、农历：打出这个词（用掉整串键）时，值排在它后面（Dates.swift）
+    if let i = out.firstIndex(where: { Dates.words.contains($0["text"] as? String ?? "") && $0["consume"] as? Int == keys.count }) {
+        let values = Dates.values(for: out[i]["text"] as! String).filter { seen.insert($0).inserted }
+        out.insert(contentsOf: values.map { ["text": $0, "consume": keys.count] }, at: i + 1)
+    }
     let words = english.filter { w in !out.contains { $0["text"] as? String == w } }
     out.insert(contentsOf: words.map { ["text": $0, "consume": keys.count] }, at: complete && !out.isEmpty ? max(1, rememberedCount) : rememberedCount)
     return (r.display, out, rememberedCount > 0, Set(words))
@@ -202,15 +216,17 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
 
 var decided = Decided()
 
-/// 快的那份答复（苹果和 RIME 的候选）。refine：要不要让模型重排（至少两个音节、全部读得通、用户没在这串键上改选过）。
-typealias Fast = (display: String, candidates: [[String: Any]], remembered: Bool, english: Set<String>, refine: Bool)
+/// 快的那份答复（苹果和 RIME 的候选）。refine：要不要让模型重排（至少两个音节、全部读得通、用户没在这串键上改选过）；
+/// correct：要不要纠错（双拼、整串读不通、至少 4 个键、用户没在这串键上改选过，见 Typo.swift）。
+typealias Fast = (display: String, candidates: [[String: Any]], remembered: Bool, english: Set<String>, refine: Bool, correct: Bool)
 func sendFast(id: Int, input: String) -> Fast {
     memory.reloadIfChanged()
     let f = fastAnswer(input)
     stats.answered(input, fastTop: f.candidates.first?["text"] as? String)
     let refine = scorer.isReady && reading(input).refinable && !f.remembered
-    send(["type": "answer", "id": id, "display": f.display, "candidates": f.candidates, "more": refine])
-    return (f.display, f.candidates, f.remembered, f.english, refine)
+    let correct = correctOption && scorer.isReady && Scheme.current.isDouble && input.count >= 4 && !reading(input).complete && !f.remembered
+    send(["type": "answer", "id": id, "display": f.display, "candidates": f.candidates, "more": refine || correct])
+    return (f.display, f.candidates, f.remembered, f.english, refine, correct)
 }
 
 /// 模型算着的时候先答了快的那份的询问（scorer.onQuery），轮到它时不再答一遍。
@@ -239,9 +255,10 @@ func answerQuery(id: Int, input: String, context: String) {
     if let e = early, e.id == id { fast = e.fast } else { fast = sendFast(id: id, input: input) }
     early = nil
     let keys = Array(input)
-    guard fast.refine else { return }
+    guard fast.refine || fast.correct else { return }
     // 快打时先不重排：停顿够久（期间没有新消息）才算；等的时候来了新询问，这一个作废（壳只要最新的答复）
     if pauseOption > 0, pauseAlways || scorer.slow, !inbox.idle(for: pauseOption / 1000), inbox.hasQuery() { return }
+    if fast.correct { return answerCorrected(id: id, input: input, context: context, fast: fast) }
     /// 补发整句；用户在这串键上忘掉过它（Shift+⌫）就不发，返回 false。
     func answer(_ s: String) -> Bool {
         guard !memory.isForgotten(input, s) else { return false }
@@ -291,6 +308,24 @@ func answerQuery(id: Int, input: String, context: String) {
     if again != s { _ = answer(again) }
 }
 
+/// 打错纠正：改一处后读得通的各种整句交模型按前文挑（Typo.swift），挑出的放第一位、标 ✎（和模型重排的 ✦ 分开：一个是改了你按的键，一个是按前文换了词），英文单词仍在它前面。
+/// 没有读得通的改法、模型出错时，快的那份就是最终的。
+func answerCorrected(id: Int, input: String, context: String, fast: Fast) {
+    func settleFast() { send(["type": "answer", "id": id, "display": fast.display, "candidates": fast.candidates]) }
+    let cands = Typo.candidates(input, limit: budget.apple + budget.rime)
+    guard !cands.isEmpty, !inbox.hasQuery() else { return cands.isEmpty ? settleFast() : () }
+    guard let lp = scorer.score(context, cands.map(\.text)) else {
+        if !inbox.hasQuery() { settleFast() }
+        return
+    }
+    let best = cands[lp.indices.max { lp[$0] < lp[$1] }!].text
+    let english = fast.candidates.filter { fast.english.contains($0["text"] as? String ?? "") }
+    let others = fast.candidates.filter { !fast.english.contains($0["text"] as? String ?? "") && $0["text"] as? String != best }
+    let top: [String: Any] = ["text": best, "consume": input.count, "note": "✎"]
+    send(["type": "answer", "id": id, "display": fast.display, "candidates": english + [top] + others])
+    stats.refined(input, sentence: best)
+}
+
 let inbox = Inbox()
 Thread.detachNewThread {
     while let line = readLine() { inbox.push(line) }
@@ -312,7 +347,8 @@ while let m = inbox.pop() {
         decided = Decided() // 上屏后前文变了，之前定下的词不再沿用
         stats.committed(m)
         // 切走时的自动上屏不是用户确认的，不学
-        guard m["auto"] as? Bool != true, let pieces = m["pieces"] as? [[String: Any]] else { continue }
+        // 以词定字取的一个字（piece 带 char）不是这串键的意思，不学；带着它拼起来的一段也不学
+        guard m["auto"] as? Bool != true, let pieces = m["pieces"] as? [[String: Any]], !pieces.contains(where: { $0["char"] != nil }) else { continue }
         var changed = false
         for piece in pieces {
             guard let index = piece["index"] as? Int, index > 0, let keys = piece["input"] as? String, let text = piece["text"] as? String else { continue }

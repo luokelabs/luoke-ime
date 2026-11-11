@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import LuokeShell
 import SwiftUI
 
@@ -135,12 +136,13 @@ final class SettingsModel: ObservableObject {
     init(preview: Bool = false) {
         self.preview = preview
         config = preview ? Self.previewConfig : EngineManager.shared.config
-        if !preview { EngineManager.shared.onConfigChange = { [weak self] in self?.refresh() } }
+        if !preview { EngineManager.shared.onConfigChange = { [weak self] in self?.refresh() } } else { reloadUsage() }
     }
 
     private static var previewConfig: ShellConfig {
         var c = ShellConfig()
         c.apps["com.openai.chat"] = .init(english: true)
+        c.voiceOn = true // 画设置页时语音那一节展开
         return c
     }
 
@@ -160,6 +162,7 @@ final class SettingsModel: ObservableObject {
     func open(_ page: SettingsWindow.Page) {
         refresh()
         reloadForgotten()
+        reloadUsage()
         switch page {
         case .global: tab = .global
         case .privacy: tab = .privacy
@@ -233,6 +236,30 @@ final class SettingsModel: ObservableObject {
         SettingsWindow.confirmForgetLearned(t)
     }
 
+    /// 最近 7 天的使用计数（打开设置窗口时读）。
+    @Published var usage: [Usage.Event: Int] = [:]
+
+    func reloadUsage() {
+        usage = preview ? [.commit: 1240, .pickFirst: 1385, .pickOther: 162, .backspaceAfterCommit: 96,
+                           .predictShown: 141, .predictOpened: 38, .predictPicked: 27, .predictChars: 81]
+            : manager.usage.total(lastDays: 7)
+    }
+
+    func resetUsage() {
+        guard !preview else { return }
+        manager.usage.reset()
+        reloadUsage()
+    }
+
+    /// 系统里螺壳输入法的麦克风权限被拒了（打开语音以后提示去系统设置里开）。
+    var microphoneDenied: Bool {
+        !preview && [.denied, .restricted].contains(AVCaptureDevice.authorizationStatus(for: .audio))
+    }
+
+    func openMicrophoneSettings() {
+        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+    }
+
     func open(_ url: URL) {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         NSWorkspace.shared.open(url)
@@ -280,6 +307,38 @@ private struct GlobalPage: View {
                 Picker("输入方案", selection: Binding(get: { model.currentEngine ?? "" }, set: { id in model.update { $0.currentEngine = id } })) {
                     ForEach(model.typingEngines, id: \.id) { Text($0.name).tag($0.id) }
                 }
+            }
+            Section(lk: "模糊音") {
+                Toggle("模糊音", isOn: Binding(get: { c.fuzzyOn }, set: { v in model.update { $0.fuzzyOn = v } }))
+                // 关着时不列六组（勾选照样留着），打开后才出现
+                if c.fuzzyOn {
+                    ForEach(ShellConfig.fuzzyChoices, id: \.self) { pair in
+                        Toggle(pair.replacingOccurrences(of: "_", with: " = "), isOn: Binding(get: { c.fuzzyPairs.contains(pair) }, set: { v in
+                            model.update { if v { $0.fuzzyPairs.insert(pair) } else { $0.fuzzyPairs.remove(pair) } }
+                        })).toggleStyle(.checkbox)
+                    }
+                }
+                Text("打开后拼法相近的字也会出现，打对的字偶尔会排到后面。").font(.caption).foregroundStyle(.secondary)
+            }
+            Section(lk: "语音") {
+                Toggle("语音输入：按住\(voiceKeyName(c.voiceKey ?? .rightOption))说话，松开上屏", isOn: Binding(get: { c.voiceOn }, set: { v in model.update { $0.voiceOn = v } }))
+                if c.voiceOn {
+                    Picker("按住哪个键说话", selection: Binding(get: { c.voiceKey ?? .rightOption }, set: { v in model.update { $0.voiceKey = v == .rightOption ? nil : v } })) {
+                        ForEach([Manifest.Hotkey.Key.rightOption, .rightCommand, .rightControl], id: \.self) { Text(voiceKeyName($0)).tag($0) }
+                    }
+                    Text("按右 Alt 没反应的（外接 Windows 键盘、在系统设置里对调过修饰键），多半是它发出来的成了右 ⌘，选右 ⌘ 试试。").font(.caption).foregroundStyle(.secondary)
+                    Toggle("说完后整理：去掉口头禅、理顺改口", isOn: Binding(get: { c.voiceTidyActive }, set: { v in model.update { $0.voiceTidy = v } }))
+                    if model.microphoneDenied {
+                        HStack {
+                            Text("没有麦克风权限，说话听不到。").font(.caption).foregroundStyle(.red)
+                            Button("去系统设置里打开") { model.openMicrophoneSettings() }.controlSize(.small)
+                        }
+                    }
+                }
+                Text(c.voiceOn && !ShellConfig.voiceTidyDefault
+                     ? "识别和整理都由螺壳在这台 Mac 上做，要先装好螺壳。内存 24 GB 及以下的 Mac 上整理要等好几秒，默认不整理。"
+                     : "识别和整理都由螺壳在这台 Mac 上做，要先装好螺壳。打开时系统会问一次麦克风权限。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section(lk: "中英文") {
                 Picker("进入应用时默认", selection: Binding(get: { c.defaultEnglish }, set: { v in model.update { $0.setDefaultEnglish(v) } })) {
@@ -468,7 +527,20 @@ private struct ToolsPage: View {
     var body: some View {
         let c = model.config
         let paths = EngineManager.shared.paths
+        let u = model.usage
         Form {
+            Section(lk: "使用统计") {
+                SettingRow(title: "最近 7 天", detail: "只在本机记次数，不记打了什么、在哪个应用，也不上传；密码框里、暂停所有记录、禁止记录的应用里不记。用来看候选和联想排得好不好。") {
+                    Button("清零") { model.resetUsage() }.buttonStyle(.bordered).disabled(u.isEmpty)
+                }
+                let picks = (u[.pickFirst] ?? 0) + (u[.pickOther] ?? 0)
+                Text("上屏 \(u[.commit] ?? 0) 次，选的候选里首选占 \(Self.percent(u[.pickFirst] ?? 0, picks))，上屏后马上按退格的占 \(Self.percent(u[.backspaceAfterCommit] ?? 0, u[.commit] ?? 0))")
+                    .font(.callout)
+                if model.hasPersonal {
+                    Text("联想出现 \(u[.predictShown] ?? 0) 次，打开 \(u[.predictOpened] ?? 0) 次，选了 \(u[.predictPicked] ?? 0) 次（共 \(u[.predictChars] ?? 0) 个字）")
+                        .font(.callout)
+                }
+            }
             Section(lk: "开发模式") {
                 ForEach(model.typingEngines, id: \.id) { e in
                     SettingRow(title: "记录「\(e.name)」的输入") {
@@ -496,6 +568,8 @@ private struct ToolsPage: View {
         }
         .formStyle(.grouped)
     }
+
+    static func percent(_ n: Int, _ of: Int) -> String { of == 0 ? "—" : "\(Int((100 * Double(n) / Double(of)).rounded()))%" }
 }
 
 /// 分组标题用品牌的 11/500（brand DESIGN §3），和主控、邮件、记忆一致
@@ -520,5 +594,14 @@ private struct SettingRow<Trailing: View>: View {
             Spacer(minLength: 12)
             trailing()
         }
+    }
+}
+
+/// 设置里说话的键怎么写：右 ⌥ 是 Windows 键盘上的右 Alt。
+func voiceKeyName(_ k: Manifest.Hotkey.Key) -> String {
+    switch k {
+    case .rightOption: return "右 ⌥（Alt）"
+    case .rightCommand: return "右 ⌘"
+    case .rightControl: return "右 ⌃"
     }
 }

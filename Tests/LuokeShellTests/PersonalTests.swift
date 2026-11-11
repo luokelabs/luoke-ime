@@ -106,6 +106,45 @@ import Testing
         #expect(r.channel.queries.allSatisfy { $0.context == nil })
     }
 
+    @Test func 英文模式下敲的字攒成一段转过去_退格去掉_回车和挪光标收尾() {
+        let (r, p) = Self.rig()
+        r.session.setEnglish(true)
+        r.type("Claude")
+        r.press(.space)
+        r.type("Codx")
+        r.press(.backspace)
+        r.type("e")
+        r.press(.enter)
+        r.type("git status")
+        r.press(.left)
+        r.type("x") // 一个字母不算
+        r.press(.right)
+        r.type("GitHub")
+        r.session.setEnglish(false)
+        let cs = Self.commits(p)
+        #expect(cs.map(\.text) == ["Claude Code", "git status", "GitHub"])
+        #expect(cs.allSatisfy { $0.kind == .english && $0.source == "english" && $0.app == "com.example.app" })
+    }
+
+    @Test func 英文模式下_终端_安全输入_不记录的应用里不攒() {
+        for setup in [{ (c: FakeClient) in c.appID = "com.apple.Terminal" }, { (c: FakeClient) in c.isSecureInput = true },
+                      { (c: FakeClient) in c.mayRecord = false }] {
+            let (r, p) = Self.rig()
+            setup(r.client)
+            r.session.setEnglish(true)
+            r.type("sudo hunter2")
+            r.press(.enter)
+            #expect(Self.commits(p).isEmpty)
+        }
+    }
+
+    @Test func 中文模式下放行的字不当英文模式的攒() {
+        let (r, p) = Self.rig()
+        r.type("123")
+        r.press(.enter)
+        #expect(Self.commits(p).allSatisfy { $0.kind != .english })
+    }
+
     @Test func 打字引擎和个人化组件各取自己声明的前文() {
         let (r, p) = Self.rig(typingContext: 3, personalContext: 6)
         r.client.document = "一二三四五六七八"
@@ -270,12 +309,13 @@ import Testing
         let client = FakeClient()
         let channel: EngineChannel
 
-        init(asks: Bool = true, method: String = "score", forge: Bool = false, withPersonal: Bool = true) throws {
+        init(asks: Bool = true, method: String = "score", forge: Bool = false, withPersonal: Bool = true, thirdParty: Bool = false) throws {
             let extra = asks ? #","asks":["personal"]"# : ""
             let run = #"["/usr/bin/python3","engine.py","\#(method)""# + (forge ? #","forge"]"# : "]")
             let dir = try 引擎宿主.engine("asker", manifest: #"{"protocol":1,"name":"问","kind":"typing","run":\#(run),"input_keys":"ab"\#(extra)}"#,
                                        files: ["engine.py": 转问的中转.asker])
             typing = try EngineConnection(dir: dir, paths: 引擎宿主.tempPaths())
+            typing.thirdParty = thirdParty
             broker.attach(typing)
             if withPersonal {
                 let pdir = try 引擎宿主.engine("personal", manifest: #"{"protocol":1,"name":"个人化","kind":"personal","run":["/usr/bin/python3","p.py"]}"#,
@@ -315,6 +355,14 @@ import Testing
     @Test func 引擎只能问个人化组件score和ping() throws {
         let s = try Setup(method: "predict")
         #expect(s.top(after: "a") == "error:not_allowed")
+    }
+
+    /// 热词是记忆里的常用说法：自带的引擎（语音）能要，第三方的不能。
+    @Test func 热词只给自带的引擎() throws {
+        let s = try Setup(method: "hotwords")
+        #expect(s.top(after: "a") == "P:a:\(s.typing.id)")
+        let t = try Setup(method: "hotwords", thirdParty: true)
+        #expect(t.top(after: "a") == "error:not_allowed")
     }
 
     /// 壳说现在不能交给个人化组件（安全输入，或第三方组件在不能记的时候），转问答 unavailable。
@@ -602,6 +650,29 @@ import Testing
             "task": .string("luoke-ime.predict"), "context": .string("今天天气"), "k": .number(4)])))
         #expect(p?.path == "/tasks/luoke-ime.predict/v1/predict")
         #expect(p?.body == .object(["context": .string("今天天气"), "k": .number(4)]))
+        let t = AskBroker.hubRequest(Ask(id: 1, to: "hub", method: "transcribe", params: .object([
+            "task": .string("luoke-ime.transcribe"), "session": .string("s1"), "seq": .number(0), "audio": .string("AAAA"),
+            "want": .string("draft"), "extra": .string("不转")])))
+        #expect(t?.path == "/tasks/luoke-ime.transcribe/v1/transcribe")
+        #expect(t?.body == .object(["session": .string("s1"), "seq": .number(0), "audio": .string("AAAA"), "want": .string("draft")]))
+        #expect(AskBroker.hubRequest(Ask(id: 1, to: "hub", method: "transcribe", params: .object([
+            "task": .string("luoke-ime.transcribe"), "seq": .number(0)]))) == nil) // 没有会话
+        #expect(AskBroker.hubRequest(Ask(id: 1, to: "hub", method: "warmup", params: .object([
+            "task": .string("luoke-ime.transcribe"), "lease_id": .string("L")])))?.body
+            == .object(["task": .string("luoke-ime.transcribe"), "lease_id": .string("L")]))
+    }
+
+    @Test func 生成的流式答复拼成一段() {
+        let g = AskBroker.hubRequest(Ask(id: 1, to: "hub", method: "generate", params: .object([
+            "task": .string("luoke-ime.tidy"), "messages": .array([.object(["role": .string("user"), "content": .string("嗯那个")])])])))
+        #expect(g?.path == "/tasks/luoke-ime.tidy/v1/chat/completions")
+        guard case let .object(body)? = g?.body else { Issue.record("没有请求体"); return }
+        #expect(body["stream"] == .bool(true))
+        let sse = "data: {\"model\":\"m\",\"choices\":[{\"delta\":{\"content\":\"今天\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"开会\"}}]}\n\ndata: [DONE]\n\n"
+        let r = AskBroker.generateReply(7, .success(HubClient.Response(status: 200, body: Data(sse.utf8))))
+        #expect(r.result == .object(["text": .string("今天开会"), "model": .string("m")]))
+        let bad = AskBroker.generateReply(7, .success(HubClient.Response(status: 503, body: Data(#"{"code":"not_ready","retry_after":2}"#.utf8))))
+        #expect(bad.errorCode == "not_ready")
     }
 
     @Test func 解析chunked的答复() {

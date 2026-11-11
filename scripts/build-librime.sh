@@ -21,6 +21,8 @@ want="librime $LIBRIME_TAG lua $LUA_PLUGIN_COMMIT nopaths"
 if [[ -f $out/lib/librime.1.dylib && -z ${LUOKE_REBUILD:-} && "$(cat $out/.luoke-version 2>/dev/null)" == "$want" ]]; then
   print "librime 已经编好：$out（重编用 LUOKE_REBUILD=1）"; exit 0
 fi
+# 编不了就先停：别把旧的删了才发现（出版机上没有 cmake，要把编好的 vendor/librime 连 .luoke-version 一起放过去）
+command -v cmake >/dev/null || { print -u2 "vendor/librime 不是这一版（要的是：$want），这台机器没有 cmake，重编不了"; exit 1; }
 if [[ "$(cat $src/.luoke-version 2>/dev/null)" != "$want" ]]; then rm -rf "$src"; fi
 rm -rf "$out"
 mkdir -p "$src"

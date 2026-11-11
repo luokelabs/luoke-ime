@@ -6,22 +6,24 @@
 #   编的，依赖静态链在里面，lua 插件也合并进去）。
 # - 自然码双拼、全拼：自己的程序和 rime_helper，lib/ 和 vendor/ 链到小鹤的（同一份代码，不重复带 48 MB 的词库）。
 # - 个人化组件：只有脚本，用主控的 Python 和主控带的 luoke_mem（engine.json 的 luoke-python）；不带本机打分（scorer.py）。
+# - 语音：程序、整理的提示词和示例（设置里打开「语音输入」才启动）。
 # 只组装、临时签名：install.sh 之后用 Developer ID 由内向外重签所有 Mach-O。
 set -euo pipefail
 root=${0:A:h:h}
 out=${1:?用法：scripts/bundle-engines.sh <输出目录>}
-x=$root/engines/xiaohe z=$root/engines/ziranma q=$root/engines/quanpin p=$root/engines/personal
+x=$root/engines/xiaohe z=$root/engines/ziranma q=$root/engines/quanpin p=$root/engines/personal v=$root/engines/voice
 
 "$x/build.sh" >/dev/null
 "$z/build.sh" >/dev/null
 "$q/build.sh" >/dev/null
+"$v/build.sh" >/dev/null
 # 个人化组件的测试：照并排的 luoke-mem 仓库带一份 luoke_mem 进 vendor/ 再跑（只给测试用，不进包：
 # 包里的组件用主控带的那份 luoke_mem，luoke-mem 的约定）
 "$p/build.sh" >/dev/null
 [[ -f $x/vendor/rime-ice/double_pinyin_flypy.schema.yaml ]] || { print -u2 "没有雾凇词库：先跑 engines/xiaohe/build.sh"; exit 1; }
 
 rm -rf "$out"
-mkdir -p "$out/xiaohe" "$out/ziranma" "$out/quanpin" "$out/personal"
+mkdir -p "$out/xiaohe" "$out/ziranma" "$out/quanpin" "$out/personal" "$out/voice"
 
 # ---- 小鹤
 cp "$x/engine.json" "$x/xiaohe" "$x/rime_helper" "$out/xiaohe/"
@@ -34,6 +36,10 @@ lib=$out/xiaohe/lib
 mkdir -p "$lib"
 cp "$root/vendor/librime/lib/librime.1.dylib" "$lib/librime.1.dylib"
 chmod u+w "$lib/librime.1.dylib"
+# 编 librime 时自带一条指向编译目录的 rpath，运行用不上，留着就把编译机的路径带进包里
+otool -l "$lib/librime.1.dylib" | awk '$1 == "cmd" && $2 == "LC_RPATH" { r = 1 } r && $1 == "path" { print $2; r = 0 }' | while read -r rpath; do
+  install_name_tool -delete_rpath "$rpath" "$lib/librime.1.dylib"
+done
 install_name_tool -delete_rpath "$root/vendor/librime/lib" "$out/xiaohe/rime_helper" 2>/dev/null || true
 if otool -L "$out/xiaohe/rime_helper" "$lib/librime.1.dylib" | tail -n +2 | grep -vE '^\S|(/usr/lib|/System)/|@rpath/librime.1.dylib' | grep -q .; then
   print -u2 "rime_helper 或 librime 还引用了包外的动态库："; otool -L "$out/xiaohe/rime_helper" "$lib/librime.1.dylib" >&2; exit 1
@@ -61,10 +67,16 @@ json.dump(m, open(sys.argv[2], "w", encoding="utf-8"), ensure_ascii=False, inden
 PY
 find "$out" -name __pycache__ -prune -exec rm -rf {} +
 
+# ---- 语音
+cp "$v/engine.json" "$v/voice" "$v/tidy_prompt.txt" "$v/tidy_examples.json" "$out/voice/"
+
 # 改过装载路径的 Mach-O 原来的签名就失效了，Apple Silicon 上会被直接杀掉：先临时签上，能直接跑（install.sh 再用 Developer ID 重签）
 for e in ziranma quanpin; do install_name_tool -delete_rpath "$root/vendor/librime/lib" "$out/$e/rime_helper" 2>/dev/null || true; done
-for f in "$lib"/*.dylib "$out"/xiaohe/{xiaohe,rime_helper} "$out"/ziranma/{ziranma,rime_helper} "$out"/quanpin/{quanpin,rime_helper}; do
+for f in "$lib"/*.dylib "$out"/xiaohe/{xiaohe,rime_helper} "$out"/ziranma/{ziranma,rime_helper} "$out"/quanpin/{quanpin,rime_helper} "$out/voice/voice"; do
   codesign --force --sign - "$f" 2>/dev/null
 done
+
+# 编译机的路径不进包（发布时的扫描也查这个）
+if grep -rlaF "$root/" "$out" >&2; then print -u2 "上面的文件里还有编译机的路径：$root/"; exit 1; fi
 
 print "自带引擎已组装：$out（$(du -sh "$out" | cut -f1)）"

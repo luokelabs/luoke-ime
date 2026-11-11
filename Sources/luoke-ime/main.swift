@@ -20,6 +20,8 @@ let usage = """
                                               把一段输入记录（try --record 或开发模式记下的）重放给引擎，
                                               逐键打印，并对比每次询问的首选和当时是否一样；--fast 不按原来的节奏
   luoke-ime list                              列出 ~/.luoke/ime/engines 里的引擎
+  luoke-ime mcp                               从标准输入读一条 JSON-RPC 请求，答一行后退出：
+                                              螺壳主窗口里「螺壳输入法」的设置页（luoke-agent 工具协议 §2a）
 
 按键脚本：普通字符照打；特殊键写在花括号里：
   {space} {enter} {bs} {esc} {tab} {left} {right} {up} {down} {pgup} {pgdn}
@@ -84,6 +86,8 @@ case "replay":
     exit(runReplay(record: URL(fileURLWithPath: file), engineDir: engine, sandboxed: sandboxed, fast: fast))
 case "list":
     exit(runList())
+case "mcp":
+    exit(runMCP())
 case "-h", "--help", "help":
     print(usage)
 default:

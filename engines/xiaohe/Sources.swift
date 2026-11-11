@@ -7,7 +7,7 @@ final class Rime {
     private var ready = false
     var isReady: Bool { lock.lock(); defer { lock.unlock() }; return ready && process.isRunning }
 
-    init?(engineDir: URL, dataDir: URL) {
+    init?(engineDir: URL, dataDir: URL, fuzzy: [[String]] = []) {
         let shared = engineDir.appendingPathComponent("vendor/rime-ice")
         let schema = Scheme.current.rimeSchema
         guard FileManager.default.fileExists(atPath: shared.appendingPathComponent("\(schema).schema.yaml").path) else {
@@ -17,7 +17,10 @@ final class Rime {
         let user = dataDir.appendingPathComponent("rime")
         try? FileManager.default.createDirectory(at: user, withIntermediateDirectories: true)
         // 关掉 RIME 自己的用户词典：学习由引擎的记忆和模型负责
-        try? "patch:\n  translator/enable_user_dict: false\n".write(to: user.appendingPathComponent("\(schema).custom.yaml"), atomically: false, encoding: .utf8)
+        // 内容没变就不写：RIME 看到补丁变了会重编词库
+        let patch = user.appendingPathComponent("\(schema).custom.yaml")
+        let text = "patch:\n  translator/enable_user_dict: false\n" + Self.fuzzyPatch(fuzzy)
+        if (try? String(contentsOf: patch, encoding: .utf8)) != text { try? text.write(to: patch, atomically: false, encoding: .utf8) }
         var r: Rime?
         do {
             process = try LineProcess(engineDir.appendingPathComponent("rime_helper").path, [shared.path, user.path, schema]) { line in
@@ -28,6 +31,22 @@ final class Rime {
             return nil
         }
         r = self
+    }
+
+    /// 模糊音的拼写规则：插在方案的 speller/algebra 最前面，这时拼写还是全拼，双拼方案再往下才换成键位。
+    /// an/ang 不碰 ian/iang、uan/uang，那两组这次没做。
+    static func fuzzyPatch(_ pairs: [[String]]) -> String {
+        var rules: [String] = []
+        for p in pairs {
+            let (a, b) = (p[0], p[1])
+            if a.hasSuffix("n") { // 韵母
+                let head = a == "an" ? "(^|[^iu])" : "()"
+                rules += ["derive/\(head)\(b)$/$1\(a)/", "derive/\(head)\(a)$/$1\(b)/"]
+            } else { // 声母
+                rules += ["derive/^\(b)/\(a)/", "derive/^\(a)([^h])/\(b)$1/"]
+            }
+        }
+        return rules.enumerated().map { "  speller/algebra/@before \($0.offset): '\($0.element)'\n" }.joined()
     }
 
     private func markReady() { lock.lock(); ready = true; lock.unlock(); log("RIME 已就绪") }

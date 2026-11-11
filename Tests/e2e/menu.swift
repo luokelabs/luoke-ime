@@ -3,7 +3,7 @@ import ApplicationServices
 import Carbon
 
 // 输入法菜单和设置窗口的真机核对（luokelabs/luoke-ime#1、#2）：在图形会话里跑（menu.command，借终端的辅助功能授权）。
-// 只点菜单项、开关设置窗口、切两次当前模式（再切回来），不打字、不改别的设置。结果写成 JSON。
+// 只点菜单项、开关设置窗口、切两次当前模式、开关一次模糊音（都再还原），不打字、不改别的设置。结果写成 JSON。
 //   menu <结果.json> [文本文件]
 
 let out = URL(fileURLWithPath: CommandLine.arguments[1])
@@ -181,6 +181,45 @@ if let g = items.first(where: { title($0) == "设置" }) {
         note("设置窗口里的字", t.contains { $0.contains("记住各应用上次的中英文模式") }, Array(t.prefix(40)))
         note("通用页里有记忆记录的总开关、联想不叫上屏后联想", t.contains { $0.contains("记录输入内容到记忆") } && !t.contains { $0.contains("上屏后联想") },
              t.filter { $0.contains("记忆") || $0.contains("联想") })
+        // 模糊音：在窗口里点开关要存进设置（0.1.38、0.1.39 只改模糊音时不存盘）；点开、关掉一组、再还原
+        // SwiftUI 的开关：名字在它自己的标题、说明里，或者是同一行里旁边的一段文字（Form 里的开关样式）。只看本层，不整树读文字
+        func checkbox(_ e: AXUIElement, _ name: String, _ d: Int = 0) -> AXUIElement? {
+            let kids = children(e)
+            let isToggle = { (x: AXUIElement) in ["AXCheckBox", "AXSwitch"].contains(role(x)) }
+            if let c = kids.first(where: { isToggle($0) && (title($0) == name || (attr($0, kAXDescriptionAttribute as String) as? String) == name) }) { return c }
+            if kids.contains(where: { role($0) == "AXStaticText" && (attr($0, kAXValueAttribute as String) as? String) == name }),
+               let c = kids.first(where: isToggle) { return c }
+            guard d < 14 else { return nil }
+            for c in kids { if let f = checkbox(c, name, d + 1) { return f } }
+            return nil
+        }
+        func fuzzy() -> [String: Any] { settingsJSON()["fuzzy"] as? [String: Any] ?? [:] }
+        let fuzzyBefore = fuzzy()
+        // 六组只在总开关开着时列出来
+        let wasOn = fuzzyBefore["on"] as? Bool ?? false
+        if let on = checkbox(w, "模糊音") {
+            note("六组只在模糊音开着时列出", (checkbox(w, "in = ing") != nil) == wasOn, wasOn)
+            choose(on)
+            wait(1.5)
+            let f1 = fuzzy()
+            note("设置窗口里开关模糊音，存进了设置", (f1["on"] as? Bool) == !wasOn, f1)
+            note("开关模糊音后六组跟着出现、收起", (checkbox(w, "in = ing") != nil) == !wasOn)
+            if wasOn, let on = checkbox(w, "模糊音") { choose(on); wait(1.5) }
+            if let pair = checkbox(w, "in = ing") {
+                choose(pair)
+                wait(1.5)
+                let f2 = fuzzy()
+                note("设置窗口里改一组模糊音，存进了设置", (f2["pairs"] as? [String]) != (fuzzyBefore["pairs"] as? [String]), f2)
+                choose(pair)
+                wait(1.0)
+            } else {
+                note("打开模糊音后有 in = ing 这一组", false)
+            }
+            if !wasOn, let on = checkbox(w, "模糊音") { choose(on); wait(1.5) }
+            note("模糊音还原了", (fuzzy()["on"] as? Bool ?? false) == wasOn && (fuzzy()["pairs"] as? [String]) == (fuzzyBefore["pairs"] as? [String]), fuzzy())
+        } else {
+            note("设置窗口里有模糊音的开关", false, t.filter { $0.contains("模糊") || $0.contains(" = ") })
+        }
     }
     closeSettings()
     note("关掉设置窗口后文本编辑回到前台", frontBundle() == "com.apple.TextEdit", frontBundle() ?? "?")
@@ -254,7 +293,7 @@ if let f = items.first(where: { title($0).hasPrefix("清掉「") }) {
 // 7. 第三方引擎（luokelabs/luoke-ime#6）：引擎目录里有第三方的打字引擎时，菜单里标着"确认后才能用"，点它弹确认框；
 //    按"不启用"，设置里不记、当前引擎不变
 items = openMenu()
-if let t = items.first(where: { title($0).contains("（第三方，确认后才能用…）") }) {
+if let t = items.first(where: { title($0).contains("（第三方，确认后才能用）") }) {
     let before = settingsJSON()
     choose(t)
     wait(2)

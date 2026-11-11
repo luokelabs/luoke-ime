@@ -16,10 +16,13 @@
 第 2 期：模型打分从小鹤、全拼引擎搬到这里。scorer.py 在自己的子进程里加载模型（要能跑 MLX 的 Python：oMLX 自带的），
 引擎经壳转问 score：{"context", "candidates"} → {"logprobs"}。只加载一份模型，以后联想也用它。
 
-第 3 期：联想（predict）：{"context"} → {"candidates"}。先找用户自己写过的：最近的上屏里，前文末尾的几个字后面
-常接什么；再请模型接着写几种说法，太没把握的不要。壳上屏后问，有就提示"⇥ 联想"。
+第 3 期：联想（predict）：{"context"} → {"candidates"}。请模型接着写几种说法，太没把握的不要；用户自己写过的
+（最近的上屏里，前文末尾的几个字后面常接什么）交模型打分，接在这会儿的前文后面通顺才和模型的一起排；单字的不给。
+没有模型时不给联想。壳上屏后问，有就淡淡地列出来。
 
-转问：ping 答 {"ok": true}；score、predict 见上；hotwords 还没做（第 5 期），答 not_implemented。
+转问：ping 答 {"ok": true}；score、predict 见上。
+第 5 期：热词（hotwords）：{"limit"} → {"words"}。给语音：记忆里的常用说法（term），用户确认过的、记忆有把握的在前，
+猜的在后，同档里最近用过的在前；标了敏感类别的、被否掉的、被换掉的都不给。没开记忆时是空的。
 
 只用标准库。luoke_mem 用主控带的那份（组件跑在主控的 Python 上，它就在 sys.path 上；luoke-mem 的约定）；
 导入不了就不写记忆。开发、测试时用 build.sh 带进 vendor/ 的那份。
@@ -86,14 +89,15 @@ class Store:
         counts["written." + topic] += 1
         if kinds:
             counts["marked.sensitive"] += 1
-        if topic == COMMIT and not data.get("auto"):
+        if topic == COMMIT and not data.get("auto") and data.get("kind") != "english":
             history.add(text)
 
     def load_history(self, limit=5000):
         """把最近写过的上屏读进来给联想用（在写记忆的线程上做，不挡别的）。"""
         def job(mem):
             recent = mem.records(topic=COMMIT, limit=limit)  # 新的在前
-            history.add_older([r["text"] for r in reversed(recent) if not (r.get("data") or {}).get("auto")])
+            history.add_older([r["text"] for r in reversed(recent)
+                               if not (r.get("data") or {}).get("auto") and (r.get("data") or {}).get("kind") != "english"])
         self.put(job)
 
     def _memory(self):
@@ -169,8 +173,17 @@ class Recorder:
             counts["committed." + kind] += 1
             chose = [("chose", "选了「%s」，没选首选「%s」" % (p["text"], p["top"]),
                       {"app": m.get("app"), "source": m.get("source"), "text": p["text"], "top": p["top"], "index": p["index"]}, now)
-                     for p in m.get("pieces") or [] if p.get("index") and p.get("top") and p.get("text") != p.get("top")]
+                     for p in m.get("pieces") or [] if p.get("index") and p.get("top") and p.get("text") != p.get("top")
+                     and not p.get("char")]  # 以词定字取的一个字不算改选
             text = m.get("text") or ""
+            if kind == "english":
+                # 英文模式下敲的一段（壳按按键攒的，回车、挪光标、切走时转来）：单独一条，不和输入法上屏的合成一段；
+                # data 的 kind 标着 english，记忆只从里面取英文专名，联想不用它
+                self._flush()
+                if text.strip():
+                    self._write(COMMIT, "statement", text, {"app": m.get("app"), "source": m.get("source"), "kind": kind, "auto": False},
+                                now, self.kinds(text))
+                return
             if m.get("auto"):
                 # 切走时壳替用户选的：单独记一条、标出来，归纳时不当依据
                 continuing = self.seg is not None and self._continues(m, now)
@@ -380,10 +393,6 @@ def reply(ask, result=None, error=None, message=""):
         send({"type": "reply", "id": ask["id"], "result": result})
 
 
-def not_yet(ask):
-    reply(ask, error="not_implemented", message="%s 还没做" % ask.get("method"))
-
-
 def find_python():
     """能跑 MLX 的 Python：oMLX 应用自带的，或 Homebrew 装的 omlx。返回 (解释器, 要加进 PYTHONPATH 的目录)。"""
     app = "/Applications/oMLX.app/Contents/Resources/Python"
@@ -445,12 +454,13 @@ class Scorer:
             reply(ask, error="unavailable", message="模型打分器没起来")
 
     def ask_continuations(self, ask, mine):
-        """联想：模型接着写几种说法，接在 mine（用户自己写过的）后面答复；模型不在就只答 mine。"""
+        """联想：模型接着写几种说法，和模型点了头的 mine（用户自己写过的，mine_to_judge 之后的）一起排（picked）；
+        模型不在就不给联想（用户写过的没经模型看过，多半不合这会儿的前文）。"""
         self.last_used = time.monotonic()
         if self.state == "ready":
             self.jobs.put((time.monotonic(), dict(ask, _mine=mine)))
         else:
-            reply(ask, {"candidates": mine})
+            reply(ask, {"candidates": []})
 
     def _request(self, obj):
         """发一行、读一行；返回解析好的答复，超时返回 ""，打分器退出返回 None。"""
@@ -520,18 +530,26 @@ class Scorer:
     def _continue(self, at, ask):
         mine = ask.pop("_mine")
         if time.monotonic() - at > self.STALE:  # 壳等联想只等 1 秒
-            reply(ask, {"candidates": mine})
+            reply(ask, {"candidates": []})
             return True
         params = ask.get("params") or {}
         req = continue_params(params.get("context") or "")
         got = self._request({"branches": req.pop("context"), **req})
-        if got is None:
-            self._died(ask, {"candidates": mine})
+        if got is None:  # 没有模型不给联想：自己写过的也得经模型判断才给
+            self._died(ask, {"candidates": []})
             return False
-        model = [c for c in model_candidates(continuations_from_branches((got or {}).get("branches"))) if c not in mine]
+        cont = continuations_from_branches((got or {}).get("branches"))
+        lps, judge = None, judge_request(mine, cont)
+        if judge:
+            r = self._request({"ctx": params.get("context") or "", "cands": judge})
+            if r is None:
+                self._died(ask, {"candidates": picked(cont)})
+                return False
+            lps = (r or {}).get("lp")
+        out = picked(cont, mine, lps)
         counts["predict"] += 1
-        counts["predict.model" if model else "predict.none"] += 1
-        reply(ask, {"candidates": (mine + model)[:5]})
+        counts["predict.model" if out else "predict.none"] += 1
+        reply(ask, {"candidates": out})
         return True
 
     def _died(self, ask, result=None):
@@ -609,6 +627,42 @@ def model_candidates(cont, gate=MODEL_GATE):
     return out
 
 
+# 用户写过的接法要模型点头才给：接在前文后面每个字平均的对数概率不低于这个（约每个字 37% 的把握）。单字的联想
+# 不给（按 Tab 再选，和直接打一样多键）。用户自己最近一周的上屏上（eval_personal.py）：原来写过的无条件放在前面，
+# 一半的上屏出联想、39% 的上屏出的全不对；这样改以后 12% 出、9% 全不对，省下的键数少一成多。
+MINE_FLOOR = -1.0
+SHORTEST = 2
+
+
+def mine_to_judge(mine):
+    """用户写过的里交模型打分的：至少 SHORTEST 个字、全是汉字。"""
+    return [c for c in mine if len(c) >= SHORTEST and all("一" <= ch <= "鿿" for ch in c)]
+
+
+def judge_request(mine, cont):
+    """给用户写过的打分要发的候选（mine_to_judge 之后的，加上续写里把握最大的开头当参照）；不用打分时 None。
+    打分器的分数从所有候选共同的 token 边界算起，会带上前文末尾的几个字，绝对值不能直接用；同一次打分里的
+    差值是准的，用参照在续写里的对数概率换算回来。"""
+    heads = [c for c in sorted(cont, key=lambda x: -x[3]) if c[2]]
+    return mine + [heads[0][2]] if mine and heads else None
+
+
+def picked(cont, mine=(), lps=None, gate=MODEL_GATE):
+    """联想候选：模型接着写的（model_candidates），和模型点了头的用户写过的，按每个字平均的对数概率一起排，
+    单字的不要，最多 5 个。mine 是 mine_to_judge 之后的，lps 是 judge_request 那些候选的打分（没打分就不用 mine）。"""
+    ranked = []
+    if mine and lps and len(lps) == len(mine) + 1:
+        head_lp = max(c[3] for c in cont if c[2])
+        for c, lp in zip(mine, lps):
+            a = (lp - lps[-1] + head_lp) / len(c)
+            if a >= MINE_FLOOR:
+                ranked.append((a, c))
+    best = {h: lp / len(h) for _t, _total, h, lp in cont if h}
+    best.update({t: total / len(t) for t, total, _h, _l in cont})
+    ranked += [(best.get(c, -1.0), c) for c in model_candidates(cont, gate) if c not in mine]
+    return [c for _s, c in sorted(ranked, key=lambda x: -x[0]) if len(c) >= SHORTEST][:5]
+
+
 scorer = None          # 本机的打分进程：scorer 选项是 local 时收到 hello 就起；经主控时要退回本机才起
 scorer_options = None  # 起它用的选项（经主控时先记着）
 LOCAL_IDLE = 300       # 经主控打分时，本机打分进程闲了这么久就停掉（全机只留一份模型，ADR 0001）
@@ -652,18 +706,18 @@ def start_scorer(options):
 
 def predict(ask):
     ctx = (ask.get("params") or {}).get("context") or ""
-    mine = history.predict(ctx)
+    mine = mine_to_judge(history.predict(ctx))
 
     def local(a):
         ensure_local()
         if scorer is None:
-            reply(a, {"candidates": mine})
+            reply(a, {"candidates": []})
         else:
             scorer.ask_continuations(a, mine)
     if scorer_mode == "local":
         local(ask)
-    else:  # hub：只用主控（不行就只给用户自己写过的）；auto：不行时交给本机
-        hub.predict(ask, mine, local if scorer_mode == "auto" else (lambda a: reply(a, {"candidates": mine})))
+    else:  # hub：只用主控（不行就不给联想）；auto：不行时交给本机
+        hub.predict(ask, mine, local if scorer_mode == "auto" else (lambda a: reply(a, {"candidates": []})))
 
 
 RERANK = "luoke-ime.rerank"    # 主控里的重排打分任务（luoke-core 的配方）
@@ -745,16 +799,27 @@ class HubRelay:
                   ok, ask, fallback)
 
     def predict(self, ask, mine, fallback):
-        """联想里模型那一路：主控的通用续写（/v1/continue），截法、挑法都在这里（continuations_from_branches、
-        model_candidates），接在 mine（用户自己写过的）后面。老主控还没有 continue 时退回旧的 predict（截法在主控里）。"""
+        """联想经主控：通用续写（/v1/continue），mine（用户自己写过的，mine_to_judge 之后的）再交重排任务打分，
+        截法、挑法都在这里（continuations_from_branches、picked）。老主控还没有 continue 时退回旧的 predict（截法在主控里）。
+        打分不成就只给模型续写的。"""
         if not self.up:
-            return fallback(ask) if self.down_code in self.FALLBACK else reply(ask, {"candidates": mine})
+            return fallback(ask) if self.down_code in self.FALLBACK else reply(ask, {"candidates": []})
         ctx = (ask.get("params") or {}).get("context") or ""
 
         def answer(cont):
             counts["hub.predict"] += 1
-            model = [c for c in model_candidates(cont) if c not in mine]
-            reply(ask, {"candidates": (mine + model)[:5]})
+            judge = judge_request(mine, cont)
+            if not judge:
+                reply(ask, {"candidates": picked(cont)})
+                return True
+
+            def scored(r):
+                if not isinstance(r.get("logprobs"), list):
+                    return False
+                reply(ask, {"candidates": picked(cont, mine, r["logprobs"])})
+                return True
+            self._ask("score", {"task": RERANK, "context": ctx, "candidates": judge}, scored, ask,
+                      lambda a: reply(a, {"candidates": picked(cont)}))
             return True
 
         def ok(r):
@@ -822,11 +887,60 @@ def score(ask):
         hub.score(ask, lambda a: reply(a, error="unavailable", message="主控暂时不可用"))
 
 
+HOTWORDS_MAX = 80
+CONFIDENCE_ORDER = {"sure": 0, "likely": 1, "guess": 2}
+OLD_STATUS = {"active": "likely", "proposed": "guess"}  # 老版 luoke_mem 没有 confidence 时按状态算
+
+
+def pick_hotwords(notes, limit):
+    """记忆里的常用说法 → 热词：标了敏感类别的不要，太长、带换行的不要，去重；有把握的在前，同档里最近用过的在前。"""
+    out, seen = [], set()
+    ranked = sorted(notes, key=lambda n: n.get("fresh") or n.get("formed_at") or "", reverse=True)  # 最近用过的在前
+    ranked.sort(key=lambda n: CONFIDENCE_ORDER.get(n.get("confidence") or OLD_STATUS.get(n.get("status")), 3))  # 再按把握程度
+    for n in ranked:
+        t = (n.get("text") or "").strip()
+        if n.get("sensitive") or not t or len(t) > 24 or "\n" in t or t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def hotword_list(mem, limit):
+    """有 mem.hotwords（luoke_mem 0.33 起）就用它：人名最多占四成、英文专名两成，剩下给用户自己的说法，
+    用不完的让给别的类（写信对象多的人，人名会把自己打的说法挤掉）。旧版库退回自己挑。"""
+    if hasattr(mem, "hotwords"):
+        return list(mem.hotwords(limit))
+    try:  # 按把握程度要，猜的也要
+        notes = mem.notes(kinds=["term"], confidence=["sure", "likely", "guess"])
+    except TypeError:  # 更老的没有 confidence
+        notes = mem.notes(kinds=["term"], status=["active", "proposed"])
+    return pick_hotwords(notes, limit)
+
+
+def hotwords(ask):
+    limit = min(int((ask.get("params") or {}).get("limit") or 50), HOTWORDS_MAX)
+    if store is None or store.broken:
+        return reply(ask, {"words": []})
+
+    def job(mem):
+        try:
+            words = hotword_list(mem, limit)
+            counts["hotwords"] += 1
+            reply(ask, {"words": words})
+        except Exception as e:  # noqa: BLE001
+            log("读热词失败：%s" % type(e).__name__)
+            reply(ask, error="unavailable", message="读不了记忆")
+    store.put(job)
+
+
 METHODS = {
     "ping": lambda ask: reply(ask, {"ok": True, "memory": store.status if store is not None else "off"}),
     "score": score,       # 前文 + 候选 → 各自的对数概率（第 2 期）
     "predict": predict,   # 前文 → 几个接着写的候选（第 3 期：联想）
-    "hotwords": not_yet,  # → 常用的专名和说法（给语音）
+    "hotwords": lambda ask: hotwords(ask),  # → 常用的专名和说法（给语音，第 5 期）
 }
 
 

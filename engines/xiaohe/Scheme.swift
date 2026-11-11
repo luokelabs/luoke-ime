@@ -4,7 +4,7 @@ import Foundation
 /// （engines/ziranma、engines/quanpin 用 --scheme ziranma / quanpin 运行）。
 /// - 双拼（小鹤、自然码）：每个音节固定两个键，引擎自己把按键拆成全拼音节（用 ' 隔开）交给苹果的转换引擎；两种只差键位表。
 /// - 全拼：原始字母直接交给苹果。音节怎么切、每个候选用掉几个键，都按苹果给的拼音段和音节长度算——
-///   它会消歧（fangan → 方案 / 反感）、认简拼（nh → 你好）、纠错（zhognguo → 中国）。
+///   它会消歧（fangan → 方案 / 反感）、认简拼（nh → 你好）；打错的字母不纠，拼不成音节的当简拼（zhognguo → 中国难过）。
 enum Scheme: String {
     case xiaohe, ziranma, quanpin
 
@@ -66,10 +66,25 @@ func doubleReading(_ input: String) -> Reading {
     guard p.validKeys > 0 else { return r }
     var seen = Set<String>()
     for c in mecabra.lookup(p.pinyin, limit: 40) where c.emoji || (isHan(c.text) && (c.syllables ?? c.text.count) == c.text.count) {
-        guard seen.insert(c.text).inserted else { continue }
+        guard !shortened(c.analysis, p), seen.insert(c.text).inserted else { continue }
         r.candidates.append((c.text, min(2 * (c.syllables ?? c.text.count), p.validKeys)))
     }
     return r
+}
+
+/// 双拼里打全了的音节，苹果有时只按它的开头读（zhen'miao 给出「缜密」，拼音段是 zhen'mi）：用掉的键数照音节数算就错了，
+/// 「真苗条」会被「缜密条」顶掉。这种候选丢掉。开着模糊音时后鼻音少个 g（an = ang）是允许的。
+var fuzzyPairs: Set<String> = []
+func shortened(_ analysis: String?, _ p: Parsed) -> Bool {
+    guard let analysis else { return false }
+    for (i, seg) in analysis.split(separator: "'").map(String.init).enumerated() where i < p.syllables.count {
+        let syl = p.syllables[i]
+        guard seg != syl, syl.hasPrefix(seg) else { continue }
+        let tail = String(seg.suffix(2))
+        if seg + "g" == syl, fuzzyPairs.contains(tail + "_" + tail + "g") { continue }
+        return true
+    }
+    return false
 }
 
 /// 全拼：苹果给的拼音段就是原始字母的开头一段，它的长度就是用掉的键数；对不上的（苹果纠错时可能这样）丢掉。

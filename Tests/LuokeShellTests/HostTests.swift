@@ -64,6 +64,26 @@ import Testing
         #expect(reason.contains("崩溃了 3 次"))
     }
 
+    @Test(arguments: [false, true])
+    func 按下就录的快捷键引擎崩溃后马上重启_别的等下一次按键(restarts: Bool) throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("crashy-hotkey-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try #"{"protocol":1,"name":"会崩","kind":"hotkey","hotkey":{"key":"right_option","mode":"hold","arm":true},"run":["/bin/sh","-c","exit 3"]}"#
+            .write(to: dir.appendingPathComponent("engine.json"), atomically: true, encoding: .utf8)
+        let conn = try EngineConnection(dir: dir, paths: Self.tempPaths())
+        conn.sandboxed = false
+        conn.startsLazily = true
+        conn.restartsAfterCrash = restarts
+        let lock = NSLock()
+        var starts = 0
+        conn.onEvent = { e in if case .started = e { lock.lock(); starts += 1; lock.unlock() } }
+        try conn.start()
+        defer { conn.stop() }
+        Thread.sleep(forTimeInterval: 1)
+        lock.lock(); let n = starts; lock.unlock()
+        #expect(restarts ? n == 3 : n == 1) // 重启的照样受「反复崩溃就停用」管
+    }
+
     @Test func 卡死时强制结束并重启() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hangy-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -376,6 +396,11 @@ import Testing
         #expect(dup?.duplicates == 59)
         #expect(dup?.category == "network")
         #expect(SandboxDenial.parse(eventMessage: "Sandbox: x(1) deny(1) file-read-data /a") == nil) // 没有标签：不是我们的引擎
+        // 录音组件顺手连分布式通知：不放行，但只记日志、不提示用户；别的外发照旧算严重
+        let dn = SandboxDenial.parse(eventMessage: "Sandbox: voice(1) deny(1) mach-lookup com.apple.distributed_notifications@Uv3\nLUOKE[voice] exfil")!
+        #expect(dn.severity == .soft)
+        let pb = SandboxDenial.parse(eventMessage: "Sandbox: voice(1) deny(1) mach-lookup com.apple.pasteboard.1\nLUOKE[voice] exfil")!
+        #expect(pb.severity == .hard)
     }
 
     @Test func 菜单里的一行写短_完整说明留在suggestion() {
@@ -507,6 +532,17 @@ import Testing
         try #"{"mine": 2}"#.write(to: data.appendingPathComponent("options.json"), atomically: true, encoding: .utf8)
         guard case let .object(own) = conn.currentOptions() else { Issue.record("选项不是对象"); return }
         #expect(own["mine"] != nil)
+    }
+
+    @Test func 壳给的选项盖过引擎的选项文件() throws {
+        let paths = 引擎宿主.tempPaths()
+        let conn = try EngineConnection(dir: 引擎宿主.minimal, paths: paths)
+        let data = paths.data(conn.id)
+        try FileManager.default.createDirectory(at: data, withIntermediateDirectories: true)
+        try #"{"fuzzy": ["c_ch"]}"#.write(to: data.appendingPathComponent("options.json"), atomically: true, encoding: .utf8)
+        conn.shellOptions["fuzzy"] = .array([.string("z_zh")])
+        guard case let .object(o) = conn.currentOptions() else { Issue.record("选项不是对象"); return }
+        #expect(o["fuzzy"] == .array([.string("z_zh")]))
     }
 
     @Test func 引擎退出后它留下的子进程也被结束() throws {

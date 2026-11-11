@@ -186,6 +186,9 @@ public struct SandboxDenial: Equatable {
         case "microphone": return (.hard, "用麦克风被拦：声明 permissions.microphone: true")
         case "camera": return (.hard, "用摄像头被拦：声明 permissions.camera: true")
         case "screen": return (.hard, "读屏幕被拦：声明 permissions.screen: true")
+        case "exfil" where d.operation == "mach-lookup" && detail.hasPrefix("com.apple.distributed_notifications"):
+            // 系统的录音、界面组件会顺手连分布式通知（比如监听音频设备变化），被拦也不影响功能；照样不放行（能拿来外发），只是不提示
+            return (.soft, "系统组件想连分布式通知（\(detail)），不放行，一般不影响功能")
         case "exfil":
             return (.hard, "借别的程序外发、读剪贴板或创建后台任务被拦（\(d.operation) \(detail)）：没有对应的声明，永远不放行")
         default:

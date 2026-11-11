@@ -21,6 +21,8 @@ final class Mecabra {
     private let isEmoji: Flag?
     private let syllableLengths: Lengths?
     private let engine: OpaquePointer
+    private let setFuzzy: (@convention(c) (OpaquePointer, CFArray?) -> Void)?
+    private var analyzeOption = 0
 
     init() throws {
         guard let lib = dlopen("/usr/lib/libmecabra.dylib", RTLD_NOW) else {
@@ -37,8 +39,18 @@ final class Mecabra {
         analysis = try? symbol("MecabraCandidateGetAnalysisString", Surface.self)
         isEmoji = try? symbol("MecabraCandidateIsEmojiCandidate", Flag.self)
         syllableLengths = try? symbol("MecabraCandidateCopySyllableLengthArrayInAnalysisString", Lengths.self)
+        setFuzzy = try? symbol("MecabraSetFuzzyPinyinPairs", (@convention(c) (OpaquePointer, CFArray?) -> Void).self)
         guard let e = create(2, nil, 0) else { throw EngineFailure("苹果的转换引擎创建失败") } // 2 = 简体拼音；选项 0 = 整句和部分候选都给
         engine = e
+    }
+
+    /// 打开模糊音：每组是互通的两种拼法，比如 ["z", "zh"]。系统升级后找不到这个函数就不开，打字不受影响。
+    /// 这几组只设上还不生效，分析时第 3 个参数要带 16（实测得出，没有文档）；拼音段照旧是用户打的字母。
+    func enableFuzzy(_ pairs: [[String]]) {
+        guard !pairs.isEmpty else { return }
+        guard let setFuzzy else { return log("苹果的转换引擎里没有模糊音的接口，这一路不开") }
+        setFuzzy(engine, pairs as CFArray)
+        analyzeOption = 16
     }
 
     struct Candidate {
@@ -54,7 +66,7 @@ final class Mecabra {
 
     /// 全拼（音节间用 ' 分隔）的候选，按苹果的顺序。给原始字母时也会出英文单词。lengths：要不要各音节的长度。
     func lookup(_ pinyin: String, limit: Int, lengths: Bool = false) -> [Candidate] {
-        guard analyze(engine, pinyin as CFString, 0) != 0 else { return [] }
+        guard analyze(engine, pinyin as CFString, analyzeOption) != 0 else { return [] }
         var out: [Candidate] = []
         while out.count < limit, let c = next(engine) {
             guard let s = surface(c)?.takeUnretainedValue() else { continue }

@@ -47,7 +47,7 @@
 | 3 | 网络三档 | **能** | 三档 × {TCP4/TCP6/localhost/UDP/unix socket/bind+listen/mDNSResponder/Swift URLSession} 矩阵与预期完全一致（`run_tests.py` 的 `t_network`）。外部 `1.1.1.1:443`：none/local 在 `connect` 前就 EPERM（没发包）；any 放行（真实握手一次） | **`local` ≠ 没有外泄通道**：本机上的任何服务都能连——Clash/Surge 的 `127.0.0.1:7890` 代理等于上外网；还包括本机自己的局域网 IP、`0.0.0.0`。已实现可选端口白名单 `LOCAL_PORT_n`（已测）。unix socket 在 none/local 一律不放（它能连 docker.sock、ssh-agent 等；决定见 2.1）。`any` 含任意 unix socket。`local` 下 URLSession 解析 `localhost` 主机名失败（CFNetwork 走 mDNSResponder，见 2.1），Python/curl/nc 的 `localhost` 正常，Swift 引擎请用 `127.0.0.1` |
 | 3b | DNS（none） | **能** | `getaddrinfo("example.com")` 立刻 `gaierror`（0.04 s，含进程启动，不会卡住）；mDNSResponder socket 与 `com.apple.dnssd.service` 均不可达，无 DNS 外泄；`localhost` 靠 `/etc/hosts` 照常解析 | any 档只验证了到解析器的可达性（socket + Mach），没有真发外部查询 |
 | 4 | 子进程继承 | **能** | `curl`、`nc`、python 子进程、`sh -c`、双 fork+`setsid` 的孙进程：none 下全被拦，local 下全放行；子进程写 `~` 同样被拒 | 已打开的 fd 不受限（实测壳多传一个可写 fd，引擎照写）：壳 spawn 时只传 stdio，其余 CLOEXEC。setuid 程序（`ps`/`top`/`ping`/`sudo`）在任何沙盒进程里都无法 exec（内核行为，`allow default` 也一样），引擎里用不了 `ps` |
-| 5 | 麦克风/摄像头 | **部分**：默认拒已验证；放行档只验证到策略与服务可达，未验证真实录音/拍摄 | `device-microphone`/`device-camera` 都能编译；`sandbox_check` 默认拒、`MIC=1` 只放麦克风、`CAM=1` 只放摄像头，互不连带；音频守护进程（`audiohald`/`coreaudiod`/`AudioComponentRegistrar`）与相机服务（`cmio.registerassistantservice`/`appleh13camerad`/`appleh16camerad`）的 `bootstrap_look_up` 默认 1100(被沙盒拒)，声明后 0；被拒 lookup 在日志里带 `microphone`/`camera` 标签 | 放行清单取自 Apple 的 `appsandbox-common.sb`（`audio-input`、`coreaudio-services`、`camera`），**没有用真实录音引擎验证**，可能还缺服务——缺哪个会在日志里以 `mach-lookup <名字>` 暴露，照着补。`device-*` 由系统守护进程代查，是否进 Sandbox 日志未知 |
+| 5 | 麦克风/摄像头 | **部分**：默认拒已验证；麦克风放行档已用真实录音验证（见下方「真实录音」），摄像头放行档只验证到策略与服务可达 | `device-microphone`/`device-camera` 都能编译；`sandbox_check` 默认拒、`MIC=1` 只放麦克风、`CAM=1` 只放摄像头，互不连带；音频守护进程（`audiohald`/`coreaudiod`/`AudioComponentRegistrar`）与相机服务（`cmio.registerassistantservice`/`appleh13camerad`/`appleh16camerad`）的 `bootstrap_look_up` 默认 1100(被沙盒拒)，声明后 0；被拒 lookup 在日志里带 `microphone`/`camera` 标签 | 放行清单取自 Apple 的 `appsandbox-common.sb`（`audio-input`、`coreaudio-services`、`camera`），**没有用真实录音引擎验证**，可能还缺服务——缺哪个会在日志里以 `mach-lookup <名字>` 暴露，照着补。`device-*` 由系统守护进程代查，是否进 Sandbox 日志未知 |
 | 6 | 屏幕录制 | **能（间接）**，真实抓屏未测 | Seatbelt 没有"屏幕"操作；做法是不放行抓屏所需 Mach 服务：`windowserver.active`、`replayd`、`CARenderServer`、`tccd`。实测 `CGPreflightScreenCaptureAccess`：沙盒外 true → 默认沙盒内 false → `SCREEN=1` true；`CGWindowListCopyWindowInfo`（只数窗口数）：沙盒外 199 → 默认沙盒内 nil（WindowServer 连接都建不起来）→ `SCREEN=1` 199；拒绝在日志里带 `screen` 标签 | 沙盒外预检为 true 说明**子进程继承了父进程链的屏幕录制授权**，正是 ADR 0005 担心的情形，此时只有 Seatbelt 能拦。Apple 自己的 App Sandbox profile（`application.sb`）对所有（非插件）App 都放行 `replayd`/`windowserver.active`，把屏幕录制完全交给 TCC——所以这条靠的是"我们是 deny default"，不是 Seatbelt 的专门能力。`SCREEN=1` 下 CoreGraphics 初始化还会碰 `launchservicesd`（本模板归 exfil、不放行），ScreenCaptureKit 是否需要它未知 |
 | 7 | 间接外发 | **能** | `exec /usr/bin/open`、`osascript` EPERM；LaunchServices 只读查询 `LSCopyDefaultApplicationURLForURL`/`NSWorkspace.urlForApplication(toOpen:)`：沙盒外得 Chrome，沙盒内失败/nil；`launchservicesd`、`lsd.open`、`coreservices.appleevents`、`pasteboard.1`、`distributed_notifications`、`quarantine-resolver` 沙盒内全 1100；`sandbox_check` 对 `lsopen`、`appleevent-send`（含 `appleevent-destination com.apple.finder`）、`job-creation`、`hid-control` 全拒；真试 `launchctl submit`（逃出沙盒的经典手法）被拒并记 `job-creation` | **没有真去 open / 发 AppleEvent**，上面是推断+只读证据。launchd 的只读查询仍可用（`launchctl print gui/UID` 沙盒内能跑，泄露已装 LaunchAgents 列表）；`kickstart`/`bootout` 等动词未试。封 LaunchServices 的代价：Foundation 里依赖 LS 数据库的功能退化——`UTType("txt")` 变成 `dyn.…`，`typeIdentifierKey`/`contentTypeKey`/`localizedNameKey`/`preferredMIMEType` 为 nil；`Bundle(path:)`、`UserDefaults`、`Process`、URLSession(any) 不受影响 |
 | 8 | 剪贴板（只报告） | 本模板下**不可读** | `NSPasteboard.general.changeCount`：沙盒外 200，沙盒内 0；`com.apple.pasteboard.1` 沙盒内 1100 | `allow default` 型 profile 下可读（该服务可达）。没有读内容（新系统可能弹"粘贴"提示） |
@@ -130,7 +130,7 @@ permissions                                     追加的参数（固定参数 E
 
 | 项 | 原因 / 现有证据 |
 |---|---|
-| 真实录音/拍摄时，deny 在 coreaudiod/相机守护进程侧是否生效；`MIC=1`/`CAM=1` 的放行清单是否足够 | 会触发 TCC 弹窗，按约束未做。证据：`sandbox_check` 求值 + Mach 服务可达性差分 + Apple 自己 profile 的服务清单 |
+| 真实拍摄时，deny 在相机守护进程侧是否生效；`CAM=1` 的放行清单是否足够（麦克风已验证，见下方「真实录音」） | 会触发 TCC 弹窗，按约束未做。证据：`sandbox_check` 求值 + Mach 服务可达性差分 + Apple 自己 profile 的服务清单 |
 | 真实抓屏（`CGWindowListCreateImage`/`CGDisplayStream`/ScreenCaptureKit/`screencapture`）被拦；`SCREEN=1` 是否足够 | 会截到用户屏幕且可能弹窗。证据：WindowServer/replayd/tccd 不可达、预检 false、窗口枚举 nil |
 | 真正 `open` URL / 发 AppleEvent 被拒的日志长什么样（`lsopen`、`appleevent-send` 是否进 Sandbox 日志） | 按约束不触发。证据：`sandbox_check` 对这些操作返回拒、相关 Mach 服务 1100、LaunchServices 只读查询失败 |
 | 非管理员用户能否 `log stream` 读到 Sandbox 拒绝 | 本机只有 admin 用户可用 |
@@ -138,3 +138,13 @@ permissions                                     追加的参数（固定参数 E
 | `network: any` 下真实的外部 DNS 解析与完整 HTTPS 成功路径 | 外部流量限制；只验证了解析器 socket/Mach 可达，以及本机自签 HTTPS 上 URLSession 走到证书评估（-1202，沙盒内外一致） |
 | macOS"本地网络"隐私提示（`any` 档的引擎访问局域网别的机器时是否以壳的名义弹窗） | 未测 |
 | `sandbox_init_with_parameters` 启动器替代 `sandbox-exec`；其它 macOS 版本；Go/Rust 编译产物、Rosetta 下的 x86 引擎 | 只测了 27.0.1，语言覆盖 Python/Swift/Node/Bun/Ruby/Perl |
+
+## 真实录音（麦克风放行档）
+
+`research/mic_probe` 是一个最小的快捷键引擎（按住右 ⌥ 录音，松开把时长、采样率、音量作为文字上屏；不存音频、只算音量），声明 `"permissions": {"microphone": true}`。装成第三方引擎、确认启用后，在测试机（M4）的螺壳里实测：
+
+- 壳启动时按 ADR 0005 向系统申请麦克风，弹窗以螺壳的名义出现（TCC 记在 `ai.luoke.inputmethod.Luoke` 名下）；允许后，沙盒里的引擎用 `AVAudioEngine` 录到了真实的声音（RMS 不为零），日志里没有沙盒拦截。现在模板里的放行清单够用。
+- 按住 2 秒只录到约 1.2 秒：壳要等按住 150 ms 才发 `start`，引擎收到后启动录音又要几百毫秒。加了 `hotkey.arm`（按下就发 `arm`，引擎随壳启动）以后约 1.7–1.8 秒，引擎空着时再先 `prepare()` 好录音组件，约 1.9 秒（ADR 0016）。
+- 录音组件（AVAudioEngine）还会顺手连分布式通知 `com.apple.distributed_notifications@Uv3`（大概是监听音频设备变化），模板照旧拒绝（能拿来外发），录音不受影响；壳把这一条拒绝算轻的，只记日志、不提示用户。
+- 跑法：`swiftc -O -o mic_probe main.swift`，把 `engine.json` 和 `mic_probe` 放进 `~/.luoke/ime/engines/mic_probe/`，在菜单里确认启用；真机核对用 `Tests/e2e/mic.tsv`（`{hold:2000}` 按住右 ⌥ 2 秒）。`luoke-ime check research/mic_probe` 也会真的打开麦克风一下（不存音频），在自己的机器上跑之前要知道这一点。
+

@@ -76,7 +76,7 @@ final class CandidatePanel {
         guard !v.candidates.isEmpty || v.notice != nil || marked != nil else { hide(); return }
         content.model = .init(candidates: v.candidates, highlighted: v.highlighted, page: v.page, pageCount: v.pageCount,
                               notice: v.notice, marked: marked, fontSize: CGFloat(fontSize) * (v.predictHint ? 0.9 : 1),
-                              vertical: orientation == .vertical, pending: v.pending, dimmed: v.predictHint)
+                              vertical: orientation == .vertical, pending: v.pending, dimmed: v.predictHint, voice: v.voice)
         if v.topReplaced, window.isVisible { content.fadeInTop() }
         let size = content.fittingSize
         content.frame = NSRect(origin: .zero, size: size)
@@ -127,7 +127,7 @@ final class CandidatePanel {
     }
 
     /// 离屏把候选窗画成 PNG，用于检查外观。
-    static func snapshot(to url: URL, dark: Bool, pending: Bool = false, predict: Bool = false) -> Bool {
+    static func snapshot(to url: URL, dark: Bool, pending: Bool = false, predict: Bool = false, voice: SessionView.Voice? = nil) -> Bool {
         let view = CandidateView()
         view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         view.model = .init(candidates: [Candidate(text: "我不知道", consume: 6), Candidate(text: "我", consume: 2),
@@ -139,6 +139,9 @@ final class CandidatePanel {
                                             Candidate(text: "什么", consume: 0)],
                                highlighted: nil, page: 0, pageCount: 1, notice: nil, marked: nil, fontSize: 16 * 0.9, vertical: false,
                                pending: false, dimmed: true)
+        }
+        if let voice { // 语音：只有提示行（字在输入框里）
+            view.model = .init(notice: voice == .preparing ? "准备中…" : voice == .listening ? "正在听" : "整理中…", fontSize: 16, voice: voice)
         }
         let size = view.fittingSize
         let bg = NSView(frame: NSRect(origin: .zero, size: NSSize(width: size.width + 40, height: size.height + 40)))
@@ -163,6 +166,13 @@ final class CandidatePanel {
                 .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.55)]).draw(at: NSPoint(x: f.minX, y: f.minY))
             NSGraphicsContext.current = nil
         }
+        if voice != nil, let ctx = NSGraphicsContext(bitmapImageRep: rep) { // 语音的点也是独立图层，补画上去
+            NSGraphicsContext.current = ctx
+            let f = view.convert(view.voiceDot.frame, to: bg)
+            (voice == .preparing ? NSColor.systemYellow : voice == .listening ? NSColor.systemRed : NSColor.secondaryLabelColor).setFill()
+            NSBezierPath(ovalIn: NSRect(x: f.minX, y: bg.bounds.height - f.maxY, width: f.width, height: f.height)).fill()
+            NSGraphicsContext.current = nil
+        }
         guard let png = rep.representation(using: .png, properties: [:]) else { return false }
         return (try? png.write(to: url)) != nil
     }
@@ -182,11 +192,16 @@ final class CandidateView: NSView {
         var pending = false
         /// 联想还没激活：候选淡一点，不放编号（数字这时选不了），第一个前面放 ⇥（按 Tab 才能选）
         var dimmed = false
+        /// 语音的状态：提示行前面画一个会动的点（在听是红的、一跳一跳；在识别、整理是灰的、慢慢呼吸），提示字也大一点、深一点
+        var voice: SessionView.Voice?
     }
 
     static let padding: CGFloat = 6
     var model = Model() {
-        didSet { if model.pending != oldValue.pending { updateDot() } }
+        didSet {
+            if model.pending != oldValue.pending { updateDot() }
+            if model.voice != oldValue.voice { updateVoiceDot() }
+        }
     }
 
     override var isFlipped: Bool { true }
@@ -199,6 +214,44 @@ final class CandidateView: NSView {
     private var markSize: NSSize { NSAttributedString(string: Self.markGlyph, attributes: [.font: markFont]).size() }
     private var dotSlot: CGFloat { model.pending ? ceil(markSize.width) + 8 : 0 }
 
+    // MARK: - 语音的点
+
+    fileprivate let voiceDot = CALayer()
+    private var voiceDotSize: CGFloat { round(model.fontSize * 0.55) }
+    /// 提示行前面给点留的宽度（不是语音时为 0）。
+    private var voiceSlot: CGFloat { model.voice == nil ? 0 : voiceDotSize + 7 }
+
+    private func updateVoiceDot() {
+        voiceDot.removeAllAnimations()
+        voiceDot.isHidden = model.voice == nil
+        guard let v = model.voice else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        let scale = CABasicAnimation(keyPath: "transform.scale")
+        switch v {
+        case .preparing: // 话筒还没开始收音：黄点，轻轻闪，等它变红再说
+            voiceDot.backgroundColor = NSColor.systemYellow.cgColor
+            pulse.fromValue = 1; pulse.toValue = 0.6
+            scale.fromValue = 1; scale.toValue = 1
+            pulse.duration = 0.35; scale.duration = 0.35
+        case .listening: // 在听：红点一跳一跳，像录音灯
+            voiceDot.backgroundColor = NSColor.systemRed.cgColor
+            pulse.fromValue = 1; pulse.toValue = 0.35
+            scale.fromValue = 1; scale.toValue = 0.75
+            pulse.duration = 0.55; scale.duration = 0.55
+        case .working: // 在识别、整理：灰点慢慢呼吸
+            voiceDot.backgroundColor = NSColor.secondaryLabelColor.cgColor
+            pulse.fromValue = 0.8; pulse.toValue = 0.2
+            scale.fromValue = 1; scale.toValue = 1
+            pulse.duration = 0.8; scale.duration = 0.8
+        }
+        let group = CAAnimationGroup()
+        group.animations = [pulse, scale]
+        group.duration = pulse.duration
+        group.autoreverses = true
+        group.repeatCount = .infinity
+        voiceDot.add(group, forKey: "voice")
+    }
+
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
@@ -206,6 +259,8 @@ final class CandidateView: NSView {
         mark.alignmentMode = .center
         mark.isHidden = true
         layer?.addSublayer(mark)
+        voiceDot.isHidden = true
+        layer?.addSublayer(voiceDot)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -283,7 +338,9 @@ final class CandidateView: NSView {
     private var lines: [NSAttributedString] {
         var out: [NSAttributedString] = []
         if let n = model.notice {
-            out.append(NSAttributedString(string: n, attributes: [.font: NSFont.systemFont(ofSize: model.fontSize * 0.8), .foregroundColor: NSColor.secondaryLabelColor]))
+            let voice = model.voice != nil // 语音的提示大一点、深一点，一眼看得出在说话
+            out.append(NSAttributedString(string: n, attributes: [.font: NSFont.systemFont(ofSize: model.fontSize * (voice ? 0.9 : 0.8), weight: voice ? .medium : .regular),
+                                                                 .foregroundColor: voice ? NSColor.labelColor : NSColor.secondaryLabelColor]))
         }
         if let m = model.marked {
             out.append(NSAttributedString(string: m, attributes: [.font: textFont, .foregroundColor: NSColor.labelColor,
@@ -302,8 +359,8 @@ final class CandidateView: NSView {
         let its = items(highlighted: model.highlighted)
         var width: CGFloat = 0
         var height = p
-        for l in lines {
-            width = max(width, ceil(l.size().width) + 6)
+        for (i, l) in lines.enumerated() {
+            width = max(width, ceil(l.size().width) + 6 + (i == 0 && model.notice != nil ? voiceSlot : 0))
             height += rowHeight
         }
         if !its.isEmpty {
@@ -323,8 +380,9 @@ final class CandidateView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let p = Self.padding
         var y = p
-        for l in lines {
-            l.draw(at: NSPoint(x: p + 3, y: y + (rowHeight - l.size().height) / 2))
+        for (i, l) in lines.enumerated() {
+            let indent = i == 0 && model.notice != nil ? voiceSlot : 0 // 语音的点画在提示行前面
+            l.draw(at: NSPoint(x: p + 3 + indent, y: y + (rowHeight - l.size().height) / 2))
             y += rowHeight
         }
         let its = items(highlighted: model.highlighted)
@@ -369,6 +427,9 @@ final class CandidateView: NSView {
         mark.fontSize = markFont.pointSize
         mark.foregroundColor = NSColor.secondaryLabelColor.cgColor
         mark.contentsScale = window?.backingScaleFactor ?? 2
+        let d = voiceDotSize
+        voiceDot.frame = NSRect(x: p + 4, y: p + (rowHeight - d) / 2, width: d, height: d)
+        voiceDot.cornerRadius = d / 2
         CATransaction.commit()
     }
 }

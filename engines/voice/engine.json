@@ -1,0 +1,10 @@
+{
+  "protocol": 1,
+  "name": "语音",
+  "kind": "hotkey",
+  "hotkey": {"key": "right_option", "mode": "hold", "arm": true},
+  "run": ["./voice"],
+  "context": 200,
+  "permissions": {"microphone": true},
+  "asks": ["hub", "personal"]
+}

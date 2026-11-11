@@ -406,7 +406,7 @@ private func checkHotkey(_ probe: Probe, _ report: inout CheckReport) {
     let t = probe.now
     _ = probe.collect(timeout: 10) { msg in
         switch msg {
-        case let .show(i, _) where i == id: shows += 1; return false
+        case let .show(i, _, _, _) where i == id: shows += 1; return false
         case let .commit(i, text) where i == id: result = "上屏「\(text)」"; return true
         case let .end(i) where i == id: result = "结束，没有上屏"; return true
         default: return false

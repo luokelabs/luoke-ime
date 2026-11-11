@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import LuokeShell
 import os
@@ -7,21 +8,14 @@ import os
 final class EngineManager {
     static let shared = EngineManager()
 
-    struct Entry {
-        let id: String
-        let dir: URL
-        let manifest: Manifest?
-        let error: String?
-        /// 随输入法发布、在 LuokeIME.app 里的（只读，不监视改动）。
-        var bundled = false
-        /// 第三方引擎：引擎说明里和权限有关的内容的指纹（ThirdParty.fingerprint），用户确认时记下；自带的为 nil。
-        var fingerprint: String?
-    }
+    typealias Entry = EngineCatalog.Entry
 
     /// 自带的引擎：LuokeIME.app/Contents/Resources/engines（docs/发布打包.md）。
     static var bundledEngines: URL? { Bundle.main.resourceURL?.appendingPathComponent("engines") }
 
     let paths = Paths()
+    /// 本机的使用计数：所有输入框共用一份，设置窗口「高级」里显示。
+    private(set) lazy var usage = Usage(url: paths.usage)
     let log = Logger(subsystem: "ai.luoke.inputmethod", category: "engine")
     private(set) var config = ShellConfig()
     private(set) var entries: [Entry] = []
@@ -100,75 +94,46 @@ final class EngineManager {
     /// 主控据此停掉只给输入法用的打分进程（luoke-core V1 §2 `POST /accessory/exiting`，luokelabs/luoke-ime#9）。
     /// 引擎子进程读到标准输入到头自己退出，不用在这里等。被强制结束时走不到这里，主控那边另有空闲停（luoke-core#11）。
     func shutdown() {
+        usage.flush()
         monitor.stop()
         _ = broker.hub?.request("POST", "/accessory/exiting", body: .object([:]), timeout: 1)
     }
 
-    /// 扫描引擎：包里自带的，加上引擎目录里装的（同一个标识以引擎目录里的为准，方便开发时换上新版）。
+    /// 扫描引擎：包里自带的，加上引擎目录里装的（EngineCatalog，命令行的 mcp 用同一份规则）。
     private func scan() {
-        func folders(_ root: URL?) -> [URL] {
-            guard let root else { return [] }
-            let dirs = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey],
-                                                                       options: [.skipsHiddenFiles])) ?? []
-            return dirs.filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
-        }
-        func entry(_ dir: URL, bundled: Bool) -> Entry {
-            do {
-                // 解析和算指纹用同一份字节（不跟随链接）：确认过的就是启动时用的
-                let data = try Manifest.readEngineJSON(dir)
-                var e = Entry(id: dir.lastPathComponent, dir: dir, manifest: try Manifest.parse(data), error: nil, bundled: bundled)
-                if !bundled { e.fingerprint = ThirdParty.fingerprint(engineJSON: data) }
-                return e
-            } catch {
-                return Entry(id: dir.lastPathComponent, dir: dir, manifest: nil, error: String(describing: error), bundled: bundled)
-            }
-        }
-        var bundled: [String: Entry] = [:]
-        for dir in folders(Self.bundledEngines) { bundled[dir.lastPathComponent] = entry(dir, bundled: true) }
-        bundledIDs = Set(bundled.keys)
-        var byId = bundled
-        var waiting: [Entry] = []
-        for dir in folders(paths.engines) {
-            let e = entry(dir, bundled: false)
-            // 和自带的同名的第三方引擎：用户确认过才盖过自带的那份（开发时用），没确认前照旧用自带的
-            if bundled[e.id] == nil || usable(e) { byId[e.id] = e }
-            if e.manifest != nil, refusal(e) == nil, !approved(e) { waiting.append(e) }
-        }
-        entries = byId.values.sorted { $0.id < $1.id }
-        pending = waiting.sorted { $0.id < $1.id }
+        let c = EngineCatalog.scan(bundled: Self.bundledEngines, user: paths.engines, approved: config.approvedEngines)
+        entries = c.entries
+        pending = c.pending
+        bundledIDs = c.bundledIDs
         engineList = ((try? FileManager.default.contentsOfDirectory(atPath: paths.engines.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
     }
 
     var typingEntries: [Entry] { entries.filter { $0.manifest?.kind == .typing } }
 
     /// 个人化组件：用户确认过的第三方个人化组件，否则自带的。
-    private var personalEntry: Entry? {
-        let ok = entries.filter { $0.manifest?.kind == .personal && usable($0) }
-        return ok.first { !$0.bundled } ?? ok.first
-    }
+    private var personalEntry: Entry? { catalog.personal(approved: config.approvedEngines) }
 
     /// 当前引擎：设置里指定的（能用的话），否则第一个自带的打字引擎。第三方引擎不会被自动选中。
-    private var currentEntry: Entry? {
-        if let id = config.currentEngine, let e = typingEntries.first(where: { $0.id == id }), usable(e) { return e }
-        return typingEntries.first { $0.bundled && usable($0) }
-    }
+    private var currentEntry: Entry? { catalog.current(config) }
+
+    private var catalog: EngineCatalog { EngineCatalog(entries: entries) }
 
     // MARK: - 第三方引擎（luokelabs/luoke-ime#6）
 
     /// 第三方引擎不能有的声明（联网、GPU、额外的写入位置）；自带的为 nil。
-    func refusal(_ e: Entry) -> String? { e.bundled ? nil : e.manifest.flatMap(ThirdParty.refusal) }
+    func refusal(_ e: Entry) -> String? { EngineCatalog.refusal(e) }
 
     /// 用户确认过（自带的不用确认）：确认时记下的指纹和现在的一样。
-    func approved(_ e: Entry) -> Bool { e.bundled || (e.fingerprint != nil && config.approvedEngines[e.id] == e.fingerprint) }
+    func approved(_ e: Entry) -> Bool { EngineCatalog.isApproved(e, approved: config.approvedEngines) }
 
     /// 能启动：引擎说明读得懂、没有第三方不能有的声明、确认过。
-    func usable(_ e: Entry) -> Bool { e.manifest != nil && refusal(e) == nil && approved(e) }
+    func usable(_ e: Entry) -> Bool { EngineCatalog.usable(e, approved: config.approvedEngines) }
 
     /// 数据目录等用的名字：和自带引擎同名的第三方引擎用"<标识>.third-party"，读写不到自带那份的数据。
     func storage(_ e: Entry) -> String { !e.bundled && bundledIDs.contains(e.id) ? e.id + ".third-party" : e.id }
 
     /// 记忆同意的键：自带的是标识；第三方的带上指纹，同名的不继承自带的同意，确认的内容变了也要重新同意。
-    func consentKey(_ e: Entry) -> String { e.bundled ? e.id : "\(e.id)@\(e.fingerprint ?? "?")" }
+    func consentKey(_ e: Entry) -> String { EngineCatalog.consentKey(e) }
 
     /// 用户在确认框里同意启用：记下指纹，重新扫描、重启引擎；打字引擎顺带换成它。
     func approve(_ e: Entry) {
@@ -184,12 +149,15 @@ final class EngineManager {
     }
 
     private func makeConnection(_ e: Entry) -> EngineConnection? {
-        guard let m = e.manifest else { return nil }
+        guard var m = e.manifest else { return nil }
+        if Self.isVoice(m), let k = config.voiceKey { m.hotkey?.key = k } // 设置里换了说话的键
         let c = EngineConnection(id: e.id, dir: e.dir, manifest: m, paths: paths)
         c.searchPath = e.bundled ? Self.fixedPath : loginPath
         c.memoryGranted = config.memoryEnabled(key: consentKey(e), bundled: e.bundled)
         c.thirdParty = !e.bundled
         c.storageID = storage(e)
+        if m.kind == .typing { c.shellOptions["fuzzy"] = .array(config.fuzzyActive.map { .string($0) }) }
+        if Self.isVoice(m) { c.shellOptions["tidy"] = .bool(config.voiceTidyActive) }
         broker.attach(c)
         if config.devMode.contains(e.id) { c.recorder = try? Recorder(directory: paths.records(storage(e))) }
         c.onMessage = { [weak self] in DispatchQueue.main.async { self?.pumpAll() } }
@@ -221,15 +189,34 @@ final class EngineManager {
         rebind()
     }
 
+    /// 声明了麦克风的快捷键引擎（自带的语音）：设置里的「语音输入」管它开不开、整理不整理。
+    static func isVoice(_ m: Manifest) -> Bool { EngineCatalog.isVoice(m) }
+
     private func startHotkeys() {
         hotkeys.forEach(stopInBackground)
-        hotkeys = entries.filter { $0.manifest?.kind == .hotkey && usable($0) }.compactMap { e in
+        hotkeys = entries.filter { e in
+            guard let m = e.manifest, m.kind == .hotkey, usable(e) else { return false }
+            return config.voiceOn || !Self.isVoice(m) // 语音默认关：关着时不起、不要麦克风
+        }.compactMap { e in
             let c = makeConnection(e)
-            c?.startsLazily = true
+            c?.startsLazily = true // 停了的，下一次按键时再起
+            if e.manifest?.hotkey?.arm == true { // 按下就要录的引擎先起好，崩溃了也马上重启，不然第一下要等它启动、开头的话丢了
+                c?.restartsAfterCrash = true
+                do { try c?.start() } catch { log.error("启动 \(e.id, privacy: .public) 失败：\(String(describing: error), privacy: .public)") }
+            }
             return c
         }
         hotkeyOptionsDates = hotkeys.map { optionsDate($0.id) }
         rebind()
+        requestMicrophoneIfNeeded()
+    }
+
+    /// 启用了声明麦克风的快捷键引擎、系统还没问过时，向系统申请（ADR 0005）：弹窗显示的是壳的名字，
+    /// 授权记在壳头上。用户拒了不再问，引擎录音时自己会拿不到声音。
+    private func requestMicrophoneIfNeeded() {
+        guard hotkeys.contains(where: { Self.isVoice($0.manifest) }),
+              AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined else { return }
+        AVCaptureDevice.requestAccess(for: .audio) { [log] ok in log.info("麦克风授权：\(ok ? "允许" : "拒绝", privacy: .public)") }
     }
 
     /// 起个人化组件时主控的 Python 是哪一个（只对 run 写 luoke-python 的组件有意义）。
@@ -270,6 +257,7 @@ final class EngineManager {
         var settings = config.settings
         settings.predict = true // 联想开不开按应用算（全局默认加应用覆盖），交给输入控制器的 mayPredict
         s.settings = settings
+        s.usage = usage
         if !(typing?.owns(s.typing?.channel) ?? (s.typing == nil)) {
             s.typing = typing.map { TypingEngine(manifest: $0.manifest, channel: $0.makeChannel(), id: $0.id) }
         }
@@ -348,29 +336,40 @@ final class EngineManager {
 
     // MARK: - 监视改动
 
-    private func poll() {
-        // 设置文件
+    /// 设置文件在外面改过（螺壳主窗口经 `luoke-ime mcp` 改的、agent 或用户直接改的）就读进来、照着重启引擎。
+    /// 每秒查一次；自己存盘前也先查，免得用手里旧的那份盖掉外面刚改的。读不懂（可能正写到一半）时返回 false，下一秒再读。
+    @discardableResult
+    private func reloadSettingsIfChanged() -> Bool {
         let date = modificationDate(paths.settings)
-        if date != configDate {
-            configDate = date
-            let old = config
-            guard let loaded = ShellConfig.loadIfValid(paths.settings) else {
-                log.error("设置文件读不懂（可能正写到一半），先用原来的设置")
-                configDate = nil // 下一秒再读一次
-                return
-            }
-            config = loaded
-            migrateIfNeeded()
-            if config.hubSocket != old.hubSocket { broker.hub = HubClient(accessory: Self.accessory, socketPath: config.hubSocket) }
-            if config.currentEngine != old.currentEngine || config.devMode != old.devMode { startTyping() } else { rebind() }
-            if config.approvedEngines != old.approvedEngines { // 外面改了确认过的引擎：重新扫描
-                scan()
-                startTyping()
-                startHotkeys()
-                startPersonal()
-            } else if config.memoryConsent != old.memoryConsent || config.memoryOff != old.memoryOff { startPersonal() } // 开关变了：沙盒跟着变
-            onConfigChange?()
+        guard date != configDate else { return true }
+        configDate = date
+        let old = config
+        guard let loaded = ShellConfig.loadIfValid(paths.settings) else {
+            log.error("设置文件读不懂（可能正写到一半），先用原来的设置")
+            configDate = nil // 下一秒再读一次
+            return false
         }
+        config = loaded
+        migrateIfNeeded()
+        if config.hubSocket != old.hubSocket { broker.hub = HubClient(accessory: Self.accessory, socketPath: config.hubSocket) }
+        if config.currentEngine != old.currentEngine || config.devMode != old.devMode || config.fuzzyActive != old.fuzzyActive { startTyping() } else { rebind() }
+        if config.approvedEngines != old.approvedEngines { // 外面改了确认过的引擎：重新扫描
+            scan()
+            startTyping()
+            startHotkeys()
+            startPersonal()
+        } else if config.memoryConsent != old.memoryConsent || config.memoryOff != old.memoryOff { // 开关变了：沙盒跟着变，记忆状态重新问
+            memoryStatus = nil
+            memoryCheckedAt = .distantPast
+            startPersonal()
+        }
+        if config.approvedEngines == old.approvedEngines, voiceChanged(old) { startHotkeys() }
+        onConfigChange?()
+        return true
+    }
+
+    private func poll() {
+        guard reloadSettingsIfChanged() else { return }
         // 引擎目录里增删了引擎
         let now = ((try? FileManager.default.contentsOfDirectory(atPath: paths.engines.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
         if now != engineList {
@@ -433,6 +432,7 @@ final class EngineManager {
     func remember(english: Bool, for app: String?) {
         guard let app else { return }
         englishByApp[app] = english
+        reloadSettingsIfChanged()
         let before = config.appModes
         config.noteMode(english: english, for: app)
         if config.appModes != before { save() }
@@ -443,6 +443,7 @@ final class EngineManager {
 
     /// 改设置（菜单、设置窗口都走这里）：存盘，按变了什么重启引擎或重新绑定会话。
     func update(_ change: (inout ShellConfig) -> Void) {
+        reloadSettingsIfChanged()
         let old = config
         change(&config)
         guard config != old else { return }
@@ -453,9 +454,13 @@ final class EngineManager {
             || config.defaultEnglish(for: app) != old.defaultEnglish(for: app) {
             englishByApp[app] = nil
         }
-        if config.currentEngine != old.currentEngine || config.devMode != old.devMode { startTyping() } else { rebind() }
+        if config.currentEngine != old.currentEngine || config.devMode != old.devMode || config.fuzzyActive != old.fuzzyActive { startTyping() } else { rebind() }
         if config.memoryConsent != old.memoryConsent || config.memoryOff != old.memoryOff { startPersonal() }
+        if voiceChanged(old) { startHotkeys() }
     }
+
+    /// 语音开关、整理或说话的键变了：快捷键引擎重启（整理经 hello 的选项交给引擎）。
+    private func voiceChanged(_ old: ShellConfig) -> Bool { config.voiceOn != old.voiceOn || config.voiceTidyActive != old.voiceTidyActive || config.voiceKey != old.voiceKey }
 
     /// 第 1 版的设置：先把原文件另存为 settings.v1.json（已经有了就不覆盖），存成了再写回第 2 版；另存不成就不写，原文件不动。
     private func migrateIfNeeded() {
@@ -540,15 +545,21 @@ final class EngineManager {
     /// 记忆记录开着：自带的默认开、用户关了才算关；第三方的要用户同意过（顶层 ADR 0013）。
     var memoryConsented: Bool { personalKey.map { config.memoryEnabled(key: $0, bundled: !personalIsThirdParty) } ?? false }
 
-    /// 第一次用时提示一句（只提示一次）：自带的组件默认在记，说一声、告诉用户在哪关；第三方的要用户去开。
-    func takeMemoryPrompt() -> String? {
+    /// 第一次用时提示一句：自带的组件默认在记，说一声、告诉用户在哪关；第三方的要用户去开。
+    /// 用户带着提示打完一段（memoryPromptSeen）才算提示过，之前每次进输入框都再给。
+    func memoryPrompt() -> String? {
         guard let p = personal, let key = personalKey, p.manifest.permissions.memory, !config.memoryAsked.contains(key) else { return nil }
-        config.memoryAsked.insert(key)
-        save()
         if personalIsThirdParty {
             return "第三方的个人化组件「\(p.manifest.name)」要用记忆：在输入法设置的「通用」里打开记忆记录才给它"
         }
         return memoryConsented ? "螺壳会从你打的字里学，记在本机的螺壳记忆里；不想要的话在输入法设置的「通用」里关" : nil
+    }
+
+    /// 用户带着第一次用时的提示打完了一段：记成提示过，以后不再给。
+    func memoryPromptSeen() {
+        guard let key = personalKey, !config.memoryAsked.contains(key) else { return }
+        config.memoryAsked.insert(key)
+        save()
     }
 
 

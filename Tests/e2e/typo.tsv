@@ -1,0 +1,6 @@
+# 打错纠正（小鹤，要模型：主控在跑才过）。每句错一个键，错完整串读不通；等补发再按空格。名称<TAB>按键脚本<TAB>期望输入框里的文字
+按成相邻的键	wozliifj{wait:1500}{probe}{space}	我想吃饭
+按成相邻的键（长句）	vexodzyild{wait:1500}{space}	这些都依赖
+句首按错	wpbuvidc{wait:1500}{space}	我不知道
+打反	atzdhylluhxuxxle{wait:2000}{space}	他在婚礼上许下了
+打对的不改	woxliifj{wait:1500}{space}	我想吃饭

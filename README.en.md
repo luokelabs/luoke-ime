@@ -11,12 +11,15 @@ Luoke IME is a component of [Luoke](https://github.com/luokelabs/luoke). The inp
 Bundled engines:
 
 - [Xiaohe Shuangpin](engines/xiaohe), [Ziranma Shuangpin](engines/ziranma) and [Quanpin](engines/quanpin): candidates come from Apple's converter and RIME (the rime-ice dictionary), then the on-device model re-ranks them word by word using the preceding text. On the author's own blog corpus (600 sentences), the first candidate is right about 90% of the time, against 78.8% for Apple's built-in Shuangpin ([source](engines/xiaohe/README.md)).
+- Fuzzy pinyin: z = zh, s = sh, c = ch, an = ang, en = eng, in = ing. Off by default; turn groups on under General in settings.
+- Typo correction (Shuangpin): when the keys can't be read as syllables, the engine tries fixing one nearby key (a neighbouring key, an extra or missing key, two keys swapped), lets the model pick by the preceding text, and puts the corrected sentence first, marked ✎ (✦ marks a word the model swapped in from context). Correctly typed keys are never changed. On the blog corpus with one random typo per sentence, the first candidate goes from 4.3% to 22.2% right ([source](engines/xiaohe/README.md)).
 - [Personalization component](engines/personal): writes committed text to Luoke Memory, asks Luoke for model scores on behalf of the typing engines, and provides next-phrase suggestions.
 - [Minimal example](examples/minimal): a lookup-table engine in about a dozen lines of Python. Start here to write a new engine.
+- [Voice](engines/voice): hold right ⌥ to speak, release to commit (the key can be switched to right ⌘ or right ⌃). Recognition and tidying (dropping filler words, smoothing self-corrections) are done by Luoke on your Mac. Off by default; turn it on under General in Settings.
 
 ## Status
 
-- **In closed beta** (beta1 ships input method 0.1.20; `main` is at 0.1.35).
+- **In closed beta** (beta1 ships input method 0.1.20; `main` is at 0.1.89).
 - **Requirements**: a Mac with Apple silicon, macOS 26 or later. So far verified only on macOS 26 and 27.
 - How fast the model runs depends on the chip. On Pro and Max chips it almost always finishes before you press space. Slower machines such as the M1 run fewer steps, and the first candidate is still more accurate than Apple's; see "slow machines" in the [Xiaohe engine README](engines/xiaohe/README.md). How the accuracy, speed and suggestion numbers were measured, and on which chips, is in [docs/评测.md](docs/评测.md) (in Chinese). Without Luoke, or when it is unavailable, typing works as usual with candidates from Apple and RIME only, without re-ranking or suggestions.
 - Most candidates come from Apple's converter that ships with macOS (the private library `libmecabra`), called through non-public interfaces. A macOS update may break it. If that happens, Xiaohe, Ziranma and Quanpin turn themselves off and say why.

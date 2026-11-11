@@ -22,6 +22,8 @@ public struct Paths {
 
     public var engines: URL { root.appendingPathComponent("engines") }
     public var settings: URL { root.appendingPathComponent("settings.json") }
+    /// 本机的使用计数（Usage），只有次数。
+    public var usage: URL { root.appendingPathComponent("usage.json") }
     public var dataRoot: URL { root.appendingPathComponent("data") }
     public var recordsRoot: URL { root.appendingPathComponent("records") }
     public func data(_ id: String) -> URL { dataRoot.appendingPathComponent(id) }
@@ -73,6 +75,8 @@ public final class EngineConnection {
     public let paths: Paths
     /// 用 Seatbelt 沙盒运行（ADR 0006）。只有命令行版调试时才关。
     public var sandboxed = true
+    /// 壳的设置里要交给引擎的选项（比如模糊音），叠在 currentOptions 上面。
+    public var shellOptions: [String: JSONValue] = [:]
     /// 沙盒保护哪个壳目录（输入记录、设置、别的引擎的数据）。缺省就是 paths；命令行版的检查把数据放在临时目录，
     /// 但保护的仍是真的 ~/.luoke/ime，免得检查时的沙盒比正式运行宽。
     public var protectedPaths: Paths?
@@ -86,6 +90,8 @@ public final class EngineConnection {
     public var recorder: Recorder?
     /// 快捷键引擎第一次被用到时才启动。
     public var startsLazily = false
+    /// 第一次用到时才启动的引擎，崩溃以后也马上重启，不等下一次按键（按下就要录的引擎：等按键时才起，开头的话就丢了）。
+    public var restartsAfterCrash = false
     /// 用户同意了这个组件读写记忆（声明了 permissions.memory 还不够，ARCHITECTURE §4）。没同意时沙盒不放行记忆文件、也不给它路径；
     /// 壳把同意记在自己的设置里，引擎读不到也改不了。
     public var memoryGranted = false
@@ -200,7 +206,10 @@ public final class EngineConnection {
 
         func send(_ message: ShellMessage) {
             connection.route(message, to: self)
-            if case .start = message, connection.startsLazily, connection.state == .stopped { connection.startLazily() }
+            if connection.startsLazily, connection.state == .stopped {
+                if case .start = message { connection.startLazily() }
+                if case .arm = message { connection.startLazily() }
+            }
             connection.write(message)
         }
 
@@ -433,7 +442,7 @@ public final class EngineConnection {
             return
         }
         onMessage?()
-        if !startsLazily {
+        if !startsLazily || restartsAfterCrash {
             do { try _start() } catch { disable("重启失败：\(error)") }
         }
     }
@@ -580,6 +589,7 @@ public final class EngineConnection {
            case let .object(user) = JSONValue(obj) {
             merged.merge(user) { _, new in new }
         }
+        merged.merge(shellOptions) { _, new in new }
         return .object(merged)
     }
 }

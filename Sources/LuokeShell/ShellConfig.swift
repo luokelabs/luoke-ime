@@ -54,13 +54,30 @@ public struct ShellConfig: Equatable {
     public var memoryAsked: Set<String> = []
     /// 用户确认启用过的第三方引擎：引擎标识 → 确认时引擎说明的指纹（ThirdParty.fingerprint）。指纹变了要重新确认。
     public var approvedEngines: [String: String] = [:]
+    /// 模糊音：总开关默认关，打开后默认六组全勾。关着时勾选留着，再打开还是原样。
+    public var fuzzyOn = false
+    public var fuzzyPairs: Set<String> = Set(ShellConfig.fuzzyChoices)
+    /// 这一版能选的组（"z_zh" 里两边是互通的拼法），也是界面上的顺序。
+    public static let fuzzyChoices = ["z_zh", "s_sh", "c_ch", "an_ang", "en_eng", "in_ing"]
+    /// 交给打字引擎的组：总开关关着时是空的。
+    public var fuzzyActive: [String] { fuzzyOn ? Self.fuzzyChoices.filter(fuzzyPairs.contains) : [] }
+    /// 语音输入：声明了麦克风的快捷键引擎（自带的语音）只在打开时启动、向系统要麦克风。默认关。
+    public var voiceOn = false
+    /// 说完后整理（去口头禅、理顺改口）：nil 时按这台 Mac 的内存定（voiceTidyDefault：24 GB 以上才默认整理）。
+    public var voiceTidy: Bool?
+    /// 16 GB 内存的 Mac 默认不整理：底座和转写模型二选一，每次整理要重新加载 9B，实测 8–10 秒（ADR 0016）。
+    public static var voiceTidyDefault: Bool { ProcessInfo.processInfo.physicalMemory > 24 << 30 }
+    /// 交给语音引擎的 tidy 选项。
+    public var voiceTidyActive: Bool { voiceTidy ?? Self.voiceTidyDefault }
+    /// 按住哪个键说话：nil 时照语音引擎说明里的（右 ⌥）。外接 Windows 键盘、对调过修饰键的，右 Alt 发出来的可能是右 ⌘，在这里换。
+    public var voiceKey: Manifest.Hotkey.Key?
     /// 主控的 socket（开发时指向开发版螺壳）；nil 时用装好的主控的位置（或环境变量 LUOKE_HUB_SOCKET）。
     public var hubSocket: String?
     /// 这一版不认识的键（比如回滚到旧版时，新版写下的）：原样留着、存盘时写回去，再换回新版时不丢（luokelabs/luoke-core#12 配件回滚）。
     public var unknown: [String: JSONValue] = [:]
     public var unknownRecording: [String: JSONValue] = [:]
     static let knownKeys: Set<String> = ["version", "defaults", "candidate_window", "keys", "apps", "app_modes", "dev_mode", "recording",
-                                         "auto_space", "approved_engines", "current_engine", "hub"]
+                                         "auto_space", "approved_engines", "current_engine", "hub", "fuzzy", "voice"]
     static let knownRecordingKeys: Set<String> = ["paused", "memory_consent", "memory_asked", "memory_off"]
     /// 这份是从第 1 版的文件换过来的（调用方据此另存原文件、写回第 2 版）。
     public var migratedFromV1 = false
@@ -193,6 +210,15 @@ public struct ShellConfig: Equatable {
             }
         }
         if let a = m["auto_space"] as? Bool { c.settings.autoSpace = a }
+        if let f = m["fuzzy"] as? [String: Any] {
+            c.fuzzyOn = f["on"] as? Bool ?? false
+            if let p = f["pairs"] as? [String] { c.fuzzyPairs = Set(p).intersection(fuzzyChoices) }
+        }
+        if let v = m["voice"] as? [String: Any] {
+            c.voiceOn = v["on"] as? Bool ?? false
+            c.voiceTidy = v["tidy"] as? Bool
+            c.voiceKey = (v["key"] as? String).flatMap(Manifest.Hotkey.Key.init(rawValue:))
+        }
         if let ap = m["approved_engines"] as? [String: String] { c.approvedEngines = ap }
         if let h = m["hub"] as? [String: Any], let s = h["socket"] as? String, !s.isEmpty {
             c.hubSocket = (s as NSString).expandingTildeInPath
@@ -256,9 +282,14 @@ public struct ShellConfig: Equatable {
             "recording": ["paused": recordingPaused, "memory_consent": memoryConsent.sorted(), "memory_asked": memoryAsked.sorted(),
                           "memory_off": memoryOff.sorted()],
             "auto_space": settings.autoSpace,
+            "fuzzy": ["on": fuzzyOn, "pairs": Self.fuzzyChoices.filter(fuzzyPairs.contains)],
             "approved_engines": approvedEngines,
         ]
         m["current_engine"] = currentEngine
+        var voice: [String: Any] = ["on": voiceOn]
+        voice["tidy"] = voiceTidy
+        voice["key"] = voiceKey?.rawValue
+        m["voice"] = voice
         if let hubSocket { m["hub"] = ["socket": hubSocket] }
         for (k, v) in unknown where m[k] == nil { m[k] = v.any }
         if !unknownRecording.isEmpty, var r = m["recording"] as? [String: Any] {
@@ -303,6 +334,7 @@ public struct ShellConfig: Equatable {
             && a.defaultEnglish == b.defaultEnglish && a.rememberMode == b.rememberMode && a.inline == b.inline && a.apps == b.apps
             && a.appModes == b.appModes && a.devMode == b.devMode && a.recordingPaused == b.recordingPaused
             && a.memoryConsent == b.memoryConsent && a.memoryAsked == b.memoryAsked && a.memoryOff == b.memoryOff && a.hubSocket == b.hubSocket
-            && a.approvedEngines == b.approvedEngines
+            && a.approvedEngines == b.approvedEngines && a.fuzzyOn == b.fuzzyOn && a.fuzzyPairs == b.fuzzyPairs
+            && a.voiceOn == b.voiceOn && a.voiceTidy == b.voiceTidy && a.voiceKey == b.voiceKey
     }
 }

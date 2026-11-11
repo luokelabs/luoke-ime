@@ -23,6 +23,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
     override init!(server: IMKServer!, delegate: Any!, client inputClient: Any!) {
         super.init(server: server, delegate: delegate, client: inputClient)
         session = Session(client: self, settings: EngineManager.shared.config.settings)
+        session.onFirstUseNoticeSeen = { EngineManager.shared.memoryPromptSeen() }
         EngineManager.shared.register(self)
     }
 
@@ -43,7 +44,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
         lastEnglish = english // 进入输入框时恢复的状态不闪"中/英"提示，只有用户切换时才闪
         session.setEnglish(english)
         manager.applyPrivacy(secureInput: isSecureInput, mayRecord: mayRecord) // 开发模式的记录：换了输入框先按这个应用定，再读前文
-        if let ask = manager.takeMemoryPrompt() { session.setNotice(ask) } // 读写记忆要用户同意：没表态时问一次
+        if let ask = manager.memoryPrompt() { session.setFirstUseNotice(ask) } // 第一次用时说一声，带着它打完一段才不再说
     }
 
     override func deactivateServer(_ sender: Any!) {
@@ -256,6 +257,13 @@ final class LuokeInputController: IMKInputController, SessionClient {
             menu.addItem(detail("「\(t.manifest.name)」已停用", reason))
             let again = action("重新启用「\(t.manifest.name)」", #selector(reenable(_:)))
             again.representedObject = t.id
+            menu.addItem(again)
+        }
+        for h in manager.hotkeys { // 快捷键引擎（语音）停用了：候选窗说「原因见输入法菜单」，原因和重新启用都在这里
+            guard case let .disabled(reason) = h.state else { continue }
+            menu.addItem(detail("「\(h.manifest.name)」已停用", reason))
+            let again = action("重新启用「\(h.manifest.name)」", #selector(reenable(_:)))
+            again.representedObject = h.id
             menu.addItem(again)
         }
         addDenials(to: menu)
@@ -474,7 +482,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
 
     @objc private func reenable(_ sender: Any?) {
         let id = menuItem(sender)?.representedObject as? String
-        manager.reenable([manager.typing, manager.personal].compactMap { $0 }.first { $0.id == id })
+        manager.reenable(([manager.typing, manager.personal].compactMap { $0 } + manager.hotkeys).first { $0.id == id })
     }
 
     /// 螺壳记忆并进了主控（顶层 ADR 0003 文末修订）：`open luoke://memory`，主控没在跑时系统会拉起它

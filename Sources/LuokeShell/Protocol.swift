@@ -15,6 +15,7 @@ public enum ShellMessage: Equatable {
     case forgetAll
     /// 用户在设置窗口里撤销忘掉某个词（只发给声明了 `forget_all` 的引擎）。
     case unforget(input: String, text: String)
+    case arm(id: Int)
     case start(id: Int, context: String?, app: String?)
     case stop(id: Int)
     case cancel(id: Int, reason: CancelReason)
@@ -23,7 +24,7 @@ public enum ShellMessage: Equatable {
     /// 转问的答复，转回发问的引擎；`id` 是它自己发问时的号。
     case reply(Reply)
 
-    public enum CancelReason: String { case esc, key, focus, timeout }
+    public enum CancelReason: String { case esc, key, focus, timeout, short }
 
     public struct Committed: Equatable {
         public var id: Int
@@ -37,7 +38,7 @@ public enum ShellMessage: Equatable {
         public var app: String?
 
         /// predict：用户选了一个联想。
-        public enum Kind: String { case typing, punctuation, hotkey, predict }
+        public enum Kind: String { case typing, punctuation, hotkey, predict, english }
 
         public init(id: Int, text: String, auto: Bool, context: String?, pieces: [Piece],
                     source: String? = nil, kind: Kind? = nil, app: String? = nil) {
@@ -82,6 +83,8 @@ public enum ShellMessage: Equatable {
             return ["type": "forget_all"]
         case let .unforget(input, text):
             return ["type": "unforget", "input": input, "text": text]
+        case let .arm(id):
+            return ["type": "arm", "id": id]
         case let .start(id, context, app):
             var m: [String: Any] = ["type": "start", "id": id]
             m["context"] = context
@@ -110,14 +113,17 @@ public struct Piece: Equatable {
     public var index: Int?
     /// 当时的首选。
     public var top: String?
+    /// 以词定字：只取了这个候选的第一个字（`first`）或最后一个字（`last`），`text` 就是那个字；平常是 nil。
+    public var char: String?
 
     public var raw: Bool { index == nil }
 
-    public init(input: String, text: String, index: Int?, top: String?) {
+    public init(input: String, text: String, index: Int?, top: String?, char: String? = nil) {
         self.input = input
         self.text = text
         self.index = index
         self.top = top
+        self.char = char
     }
 
     public static func raw(_ input: String) -> Piece { Piece(input: input, text: input, index: nil, top: nil) }
@@ -126,6 +132,7 @@ public struct Piece: Equatable {
         if raw { return ["input": input, "text": text, "raw": true] }
         var m: [String: Any] = ["input": input, "text": text, "index": index!]
         m["top"] = top
+        m["char"] = char
         return m
     }
 }
@@ -211,7 +218,9 @@ public struct Reply: Equatable {
 /// 引擎 → 壳。
 public enum EngineMessage: Equatable {
     case answer(Answer)
-    case show(id: Int, text: String)
+    /// hint：光标处的提示（比如语音的「整理中…」），没有时壳按自己的规矩提示。
+    /// listening：用麦克风的引擎说话筒还没真的开始收音（蓝牙耳机切模式这类），壳显示「准备中…」；不写时算在听。
+    case show(id: Int, text: String, hint: String? = nil, listening: Bool? = nil)
     case commit(id: Int, text: String)
     case end(id: Int)
     case ask(Ask)
@@ -223,7 +232,7 @@ public enum EngineMessage: Equatable {
     public var id: Int? {
         switch self {
         case let .answer(a): return a.id
-        case let .show(id, _), let .commit(id, _), let .end(id): return id
+        case let .show(id, _, _, _), let .commit(id, _), let .end(id): return id
         case let .ask(a): return a.id
         case let .reply(r): return r.id
         case .unknown: return nil
@@ -273,7 +282,10 @@ public enum EngineMessage: Equatable {
             if m["display"] != nil, !(m["display"] is String) { throw ProtocolError("answer 的 display 必须是字符串") }
             return .answer(Answer(id: try int("id"), display: m["display"] as? String, candidates: cands,
                                   more: try bool("more"), autocommit: try bool("autocommit")))
-        case "show": return .show(id: try int("id"), text: try string("text"))
+        case "show":
+            if m["hint"] != nil, !(m["hint"] is String) { throw ProtocolError("show 的 hint 必须是字符串") }
+            if m["listening"] != nil, !(m["listening"] is Bool) { throw ProtocolError("show 的 listening 必须是 true 或 false") }
+            return .show(id: try int("id"), text: try string("text"), hint: m["hint"] as? String, listening: m["listening"] as? Bool)
         case "commit": return .commit(id: try int("id"), text: try string("text"))
         case "end": return .end(id: try int("id"))
         case "ask":

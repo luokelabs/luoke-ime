@@ -25,3 +25,5 @@ __pycache__/
 
 # 按旧系统编的 librime 和它的源码（scripts/build-librime.sh）
 /vendor/
+research/mic_probe/mic_probe
+engines/voice/voice

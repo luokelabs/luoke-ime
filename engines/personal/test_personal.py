@@ -134,6 +134,21 @@ class 合成一段(unittest.TestCase):
         self.assertEqual(g.texts(), ["我们", "下午"])
         self.assertEqual([w["data"]["auto"] for w in g.topics(personal.COMMIT)], [False, True])
 
+    def test_英文模式的一段单独一条_标着english_不接进前后的中文(self):
+        g = Rig()
+        g.r.committed(commit("我们", id=1, context=""))
+        g.r.committed(commit("Claude Code", id=2, kind="english", source="english"))
+        g.r.committed(commit("git status", id=3, kind="english", source="english"))
+        g.r.committed(commit("下午", id=4, context="我们Claude Code git status"))
+        g.wait(60)
+        self.assertEqual(g.texts(), ["我们", "Claude Code", "git status", "下午"])
+        self.assertEqual([w["data"]["kind"] for w in g.topics(personal.COMMIT)], ["typing", "english", "english", "typing"])
+
+    def test_英文模式的一段里有凭证也遮(self):
+        g = Rig()
+        g.r.committed(commit("token 口令8z", id=1, kind="english", source="english"))
+        self.assertEqual(g.texts(), ["token 〔密码〕"])
+
     def test_太长就先写进去(self):
         g = Rig()
         g.r.committed(commit("字" * personal.LONGEST, id=1, context=""))
@@ -334,7 +349,7 @@ for line in sys.stdin:
         time.sleep(0.5)
     if req["ctx"] == "退出":
         sys.exit(1)
-    print(json.dumps({"lp": [-float(len(c)) for c in req["cands"]], "ms": 1}), flush=True)
+    print(json.dumps({"lp": [-30.0 if c == "不通顺" else -float(len(c)) for c in req["cands"]], "ms": 1}), flush=True)
 """
 
 
@@ -407,9 +422,9 @@ class 模型打分(unittest.TestCase):
         self.ask(2, "今天", ["甲"])
         self.assertEqual(self.reply(2)["error"]["code"], "unavailable")
 
-    def test_联想先给用户自己写过的_再给模型有把握的(self):
+    def test_联想里用户写过的要模型点头_和模型的一起排(self):
         self.wait_ready()
-        self.scorer.ask_continuations({"type": "ask", "id": 4, "params": {"context": "我们明天"}}, ["上午"])
+        self.scorer.ask_continuations({"type": "ask", "id": 4, "params": {"context": "我们明天"}}, ["上午", "不通顺"])
         self.assertEqual(self.reply(4)["result"], {"candidates": ["上午", "下午", "下午开会"]})
 
     def test_经主控打分时_本机的打分进程闲久了就停掉(self):
@@ -449,6 +464,17 @@ class 模型打分(unittest.TestCase):
 
 
 class 模型的联想(unittest.TestCase):
+    def test_联想的挑法_写过的不通顺的不要_单字的不给(self):
+        cont = [("下午开会", -2.0, "下午", -0.5), ("的", -1.0, "的", -1.0)]
+        mine = personal.mine_to_judge(["上午", "好", "abc", "不通顺"])
+        self.assertEqual(mine, ["上午", "不通顺"])                        # 单字、不是汉字的不交打分
+        req = personal.judge_request(mine, cont)
+        self.assertEqual(req, ["上午", "不通顺", "下午"])                  # 参照是把握最大的开头
+        # 打分器的分数带着前文末尾几个字（这里都多算了 -3）：按参照换算回来，上午每字 -0.25，不通顺每字 -9.5
+        self.assertEqual(personal.picked(cont, mine, [-3.5, -31.0, -3.5]), ["上午", "下午", "下午开会"])
+        self.assertEqual(personal.picked(cont, mine, None), ["下午", "下午开会"])  # 没打分：不用写过的
+        self.assertEqual(personal.picked([("的", -1.0, "的", -1.0)]), [])
+
     def test_续写到了字数上限退回上一个token的边界_碰到标点截在标点前(self):
         # 碰到过"结论和方法建"：截法归输入法，不在词中间断
         b = [{"tokens": [{"text": "结论", "logprob": -1.0}, {"text": "和方法", "logprob": -0.5}, {"text": "建议", "logprob": -0.2}]},
@@ -580,7 +606,7 @@ class 经主控打分(unittest.TestCase):
         self.assertEqual(len(local), 1)  # 这一次交给本机
         self.assertTrue(self.hub.up)      # 下一次照样先问主控
 
-    def test_联想经主控_挑法和本机一样_接在自己写过的后面(self):
+    def test_联想经主控_挑法和本机一样_写过的交重排任务打分(self):
         self.hub.predict({"type": "ask", "id": 5, "params": {"context": "今天天气"}}, ["很好"], lambda a: self.fail("不该交给本机"))
         out = self.sent[-1]
         # 主控只做通用续写：开头个数、最多几个 token、停止串由输入法传；截和挑在这边
@@ -591,7 +617,10 @@ class 经主控打分(unittest.TestCase):
         self.hub.on_reply({"type": "reply", "id": out["id"], "result": {"branches": [
             {"tokens": [{"text": "真", "logprob": -0.2}, {"text": "好", "logprob": -0.2}, {"text": "。", "logprob": -0.1}], "finish": "stop"},
             {"tokens": [{"text": "不错", "logprob": -1.0}], "finish": "length"}]}})
-        self.assertEqual(self.sent[-1]["result"], {"candidates": ["很好", "真", "真好", "不错"]})
+        judge = self.sent[-1]  # 写过的「很好」加上续写里最有把握的开头「真」当参照，交重排任务打分
+        self.assertEqual((judge["method"], judge["params"]), ("score", {"task": "luoke-ime.rerank", "context": "今天天气", "candidates": ["很好", "真"]}))
+        self.hub.on_reply({"type": "reply", "id": judge["id"], "result": {"logprobs": [-1.0, -1.2]}})
+        self.assertEqual(self.sent[-1]["result"], {"candidates": ["很好", "真好", "不错"]})  # 单字的「真」不给
 
     def test_老主控没有续写时退回旧的联想(self):
         self.hub.predict({"type": "ask", "id": 7, "params": {"context": "今天天气"}}, [], lambda a: self.fail("不该交给本机"))
@@ -600,7 +629,7 @@ class 经主控打分(unittest.TestCase):
         out = self.sent[-1]
         self.assertEqual((out["method"], out["params"]), ("predict", {"task": "luoke-ime.predict", "context": "今天天气"}))
         self.hub.on_reply({"type": "reply", "id": out["id"], "result": {"continuations": [["真好", -0.4, "真", -0.2]]}})
-        self.assertEqual(self.sent[-1]["result"], {"candidates": ["真", "真好"]})
+        self.assertEqual(self.sent[-1]["result"], {"candidates": ["真好"]})
 
     def test_联想经主控不行时交给本机(self):
         local = []
@@ -671,6 +700,42 @@ class 整个组件(unittest.TestCase):
             self.assertNotIn(gone, left)
             self.assertIn(cited, left)   # 常用说法的依据留下
             self.assertIn(forgot, left)  # 忘掉候选是用户的选择，不随保留期删
+
+    def test_热词_确认过的在前_敏感的否掉的不给(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "mem.db")
+            mem = Memory(path, tool=personal.TOOL)
+            rid = mem.record("user", "statement", "螺壳输入法和小鹤双拼", topic=personal.COMMIT)
+            sure = mem.conclude("term", "小鹤双拼", cites=[rid])
+            mem.confirm(sure)
+            mem.conclude("term", "螺壳输入法", cites=[rid])
+            mem.propose("term", "量子计算", cites=[rid])
+            mem.propose("term", "某种药", cites=[rid], sensitive=["health"])
+            no = mem.propose("term", "行云", cites=[rid])
+            mem.reject(no)
+            mem.close()
+            out, _ = self.run_component(path, [{"type": "ask", "id": 9, "from": "voice", "method": "hotwords", "params": {"limit": 10}}])
+            r = [json.loads(l) for l in out.splitlines() if l.strip() and json.loads(l).get("id") == 9][0]
+            words = r["result"]["words"]
+            self.assertEqual(words[0], "小鹤双拼")          # 用户确认过的在最前
+            self.assertEqual(set(words), {"小鹤双拼", "螺壳输入法", "量子计算"})  # 只凭一条记录推的算猜测，也给
+            self.assertNotIn("某种药", words)               # 标了敏感类别的不给
+            self.assertNotIn("行云", words)                 # 否掉的不给
+
+    def test_热词_新版库用它分好名额的_旧版库自己挑(self):
+        class New:
+            def hotwords(self, limit):
+                return ["Ada Lin", "Claude Code", "小鹤双拼"][:limit]
+        class Old:
+            def notes(self, kinds, confidence=None, status=None):
+                return [{"text": "小鹤双拼", "confidence": "sure"}, {"text": "某种药", "confidence": "sure", "sensitive": ["health"]}]
+        self.assertEqual(personal.hotword_list(New(), 2), ["Ada Lin", "Claude Code"])
+        self.assertEqual(personal.hotword_list(Old(), 50), ["小鹤双拼"])
+
+    def test_没开记忆时热词是空的(self):
+        out, _ = self.run_component(None, [{"type": "ask", "id": 9, "from": "voice", "method": "hotwords", "params": {}}])
+        r = [json.loads(l) for l in out.splitlines() if l.strip() and json.loads(l).get("id") == 9][0]
+        self.assertEqual(r["result"], {"words": []})
 
     def test_一直保留时什么都不删(self):
         with tempfile.TemporaryDirectory() as d:

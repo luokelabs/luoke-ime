@@ -23,6 +23,52 @@ import Testing
         #expect(!c.defaultEnglish && c.rememberMode && c.inline) // 新的全局默认：中文、记住上次模式、拼音在输入框里
     }
 
+    @Test func 模糊音默认关_打开后默认六组_存了再读回来一样() throws {
+        var c = ShellConfig()
+        #expect(c.fuzzyActive.isEmpty)
+        c.fuzzyOn = true
+        #expect(c.fuzzyActive == ShellConfig.fuzzyChoices)
+        c.fuzzyPairs.remove("in_ing")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try c.save(url)
+        let back = ShellConfig.parse(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any])
+        #expect(back.fuzzyActive == ["z_zh", "s_sh", "c_ch", "an_ang", "en_eng"])
+        #expect(Self.parse(#"{"version":2,"fuzzy":{"on":true,"pairs":["z_zh","x_y"]}}"#).fuzzyActive == ["z_zh"])
+        #expect(back != ShellConfig()) // 只改模糊音也算改了设置：设置窗口据此存盘、重启打字引擎
+        var off = back
+        off.fuzzyOn = false
+        #expect(off != back)
+        off.fuzzyOn = true
+        off.fuzzyPairs.insert("in_ing")
+        #expect(off != back)
+    }
+
+    @Test func 语音默认关_整理没选过时按内存定_存了再读回来一样() throws {
+        var c = ShellConfig()
+        #expect(!c.voiceOn && c.voiceTidy == nil && c.voiceTidyActive == ShellConfig.voiceTidyDefault)
+        #expect((c.json["voice"] as? [String: Any])?["tidy"] == nil) // 没选过不写，换到别的机器上照那台的内存定
+        c.voiceOn = true
+        c.voiceTidy = false
+        #expect(c != ShellConfig())
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try c.save(url)
+        let back = ShellConfig.parse(try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any])
+        #expect(back == c && back.voiceOn && back.voiceTidy == false && !back.voiceTidyActive && back.unknown["voice"] == nil)
+        #expect(Self.parse(#"{"version":2,"voice":{"on":true,"tidy":true}}"#).voiceTidyActive)
+    }
+
+    @Test func 说话的键没选过不写_选了存了再读回来一样_认不得的当没选() throws {
+        var c = ShellConfig()
+        #expect(c.voiceKey == nil && (c.json["voice"] as? [String: Any])?["key"] == nil)
+        c.voiceKey = .rightCommand
+        #expect(c != ShellConfig())
+        #expect((c.json["voice"] as? [String: Any])?["key"] as? String == "right_command")
+        #expect(Self.parse(#"{"version":2,"voice":{"on":true,"key":"right_control"}}"#).voiceKey == .rightControl)
+        #expect(Self.parse(#"{"version":2,"voice":{"on":true,"key":"left_shift"}}"#).voiceKey == nil)
+    }
+
     @Test func 第2版存了再读回来一样_重复读不再迁移() throws {
         var c = ShellConfig()
         c.defaultEnglish = true

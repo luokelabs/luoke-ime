@@ -10,9 +10,10 @@ import LuokeShell
 //   LuokeIME --disable               停用输入源
 //   LuokeIME --current               打印当前输入源
 //   LuokeIME --status                一行 JSON：注册了没有、用户添加了没有、能不能切过去（给主控的向导和诊断）
-//   LuokeIME --render-panel <out.png> [dark] [pending] [predict]   把候选窗画成图片（检查外观用；pending：画出"还在算"的小点；
-//                                                                  predict：画还没激活的联想）
+//   LuokeIME --render-panel <out.png> [dark] [pending] [predict] [preparing|listening|working]   把候选窗画成图片（检查外观用；pending：画出
+//                                                                  "还在算"的小点；predict：画还没激活的联想；preparing、listening、working：语音在准备、在听、在整理）
 //   LuokeIME --render-guide <out.png> [added] [dark] [tutorial1|2|3]   把添加输入源的引导窗口画成图片
+//     （从仓库直接跑时包里没有图标：设 LUOKE_RENDER_ICON=Resources/App/AppIcon.png）
 //   LuokeIME --render-settings <out.png> [global|apps|privacy|tools] [dark]   把设置窗口的一页画成图片（检查外观用）
 
 let arguments = CommandLine.arguments
@@ -38,7 +39,8 @@ if arguments.contains("--current") {
 if let i = arguments.firstIndex(of: "--render-panel"), i + 1 < arguments.count {
     let rest = arguments.dropFirst(i + 2)
     exit(CandidatePanel.snapshot(to: URL(fileURLWithPath: arguments[i + 1]), dark: rest.contains("dark"), pending: rest.contains("pending"),
-                                 predict: rest.contains("predict")) ? 0 : 1)
+                                 predict: rest.contains("predict"),
+                                 voice: rest.contains("preparing") ? .preparing : rest.contains("listening") ? .listening : rest.contains("working") ? .working : nil) ? 0 : 1)
 }
 if let i = arguments.firstIndex(of: "--render-guide"), i + 1 < arguments.count {
     let rest = arguments.dropFirst(i + 2)
@@ -59,7 +61,7 @@ if let i = arguments.firstIndex(of: "--render-settings"), i + 1 < arguments.coun
 // 老系统可能带 -psn_，AppKit 认的 -NS… / -Apple… 也放过。
 let usage = """
 用法：LuokeIME --register | --select | --disable | --current | --status
-      LuokeIME --render-panel <out.png> [dark] [pending] [predict]
+      LuokeIME --render-panel <out.png> [dark] [pending] [predict] [preparing|listening|working]
       LuokeIME --render-settings <out.png> [global|apps|privacy|tools] [dark]
       LuokeIME --render-guide <out.png> [added] [dark] [tutorial1|2|3]
 不带参数时作为输入法运行，只该由系统启动（从终端直接运行会退出）。

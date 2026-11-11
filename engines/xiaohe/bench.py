@@ -100,7 +100,7 @@ def main():
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
         import evidence
 
-    rows = [r for r in csv.reader(open(args.corpus, encoding="utf-8"), delimiter="\t") if r and not r[0].startswith("#")]
+    rows = [r for r in csv.reader(open(args.corpus, encoding="utf-8"), delimiter="\t", quoting=csv.QUOTE_NONE) if r and not r[0].startswith("#")]
     rows = [r for r in rows if len(r[2]) // 2 >= args.min_syllables][: args.limit]
 
     here = os.path.abspath(args.engine) if args.engine else os.path.dirname(os.path.abspath(__file__))
@@ -322,6 +322,8 @@ def main():
                 if hub_stats["errors"]:
                     not_evaluated(f"引擎 30 秒没答完询问 {q}，其间主控拒了打分：{hub_stats['errors']}")
                 sys.exit(f"引擎 30 秒没答完询问 {q}")
+            # 「答完」走标准错误、答复走标准输出，两个线程读，先后不定：最终答复（不标 more 的）还没读到就再等一会儿
+            cond.wait_for(lambda: any(not a.get("more") for _, a in answers.get(q, [])), timeout=2)
             return answers.get(q, [])
 
     def top(a, keys):
@@ -344,7 +346,7 @@ def main():
         return have, have is not None and not have.get("more")
 
     GAPS = (0, 100, 200)  # 最后一个键到按空格的停顿（毫秒）
-    fast_ok = settled_ok = final_ok = changed = 0
+    fast_ok = settled_ok = final_ok = changed = fixed = broke = 0
     caught = dict.fromkeys(GAPS, 0)
     space_ok = dict.fromkeys(GAPS, 0)
     dump = open(args.dump, "w") if args.dump else None
@@ -378,6 +380,8 @@ def main():
         settled_ok += mid == gold
         final_ok += final == gold
         changed += final != first
+        fixed += first != gold and final == gold  # 模型改对的
+        broke += first == gold and final != gold  # 模型改错的：先给的对了，被重排换掉
         item = {"i": len(items), "category": r[0], "keys": len(keys), "fast_ok": first == gold, "settled_ok": mid == gold,
                 "final_ok": final == gold, "ms": [round(at * 1000) for at, _ in got]}
         if args.typing:
@@ -386,6 +390,8 @@ def main():
         if dump:
             dump.write(json.dumps({"at": round(wall, 3), "keys": keys, "ctx": ctx, "gold": gold, "fast": first, "settled": mid, "final": final,
                                    "ms": [round(at * 1000) for at, _ in got]}, ensure_ascii=False) + "\n")
+        if len(items) % 50 == 0:  # 进度走标准错误：主控的发布脚本按它判断是不是停住了（不是慢）
+            print(f"进度 {len(items)}/{len(rows)}", file=sys.stderr, flush=True)
 
     n = len(rows)
     # 计时那段里主控拒过打分（内存紧张停了打分进程、忙）：个人化组件会照 retry_after 停一阵不问主控，这一阵只是没重排的样子，
@@ -396,7 +402,7 @@ def main():
     if refused > 0:
         not_evaluated("计时那段里主控拒了 %d 次打分（%s）" % (refused, hub_stats["errors"]))
     pct = lambda xs, q: sorted(xs)[min(n - 1, int(q * n))] * 1000
-    print(f"n={n}  先给的首选 {100 * fast_ok / n:.1f}%  不标 more 的首选 {100 * settled_ok / n:.1f}%  最终首选 {100 * final_ok / n:.1f}%  补发改了 {changed} 条")
+    print(f"n={n}  先给的首选 {100 * fast_ok / n:.1f}%  不标 more 的首选 {100 * settled_ok / n:.1f}%  最终首选 {100 * final_ok / n:.1f}%  补发改了 {changed} 条（改对 {fixed}、改错 {broke}）")
     since = "最后一个键" if args.typing is not None else "询问"
     for name, xs in (("第一份答复", lat_first), ("不标 more 的答复", lat_settled), ("最后一份答复", lat_last)):
         print(f"{since}到{name}：p50 {pct(xs, .5):.0f} ms  p90 {pct(xs, .9):.0f} ms  p99 {pct(xs, .99):.0f} ms  最长 {max(xs) * 1000:.0f} ms")
@@ -413,7 +419,10 @@ def main():
                  "params": hub_params.get("luoke-ime.rerank") if via_hub else None, "engine": os.path.basename(here.rstrip("/")),
                  "engine_options": eopts, "typing_ms": args.typing, "score_delay_ms": args.score_delay or None}
         score = {"fast_top1_pct": round(100 * fast_ok / n, 1), "settled_top1_pct": round(100 * settled_ok / n, 1),
-                 "final_top1_pct": round(100 * final_ok / n, 1), "changed": changed}
+                 "final_top1_pct": round(100 * final_ok / n, 1), "changed": changed, "fixed": fixed, "broke": broke,
+                 # 硬性条目：模型改错的不超过 max(3, 1%)。打分坏了（比如分数反了）时准确率可能还过得去，这条拦得住
+                 "broke_max": max(3, n // 100)}
+        score["hard_ok"] = broke <= score["broke_max"]
         if args.typing:
             score["space"] = {str(g): {"caught_pct": round(100 * caught[g] / n, 1), "top1_pct": round(100 * space_ok[g] / n, 1)} for g in GAPS}
         latency = {name: {"p50_ms": round(pct(xs, .5)), "p90_ms": round(pct(xs, .9)), "p99_ms": round(pct(xs, .99))}

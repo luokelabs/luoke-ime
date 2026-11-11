@@ -36,9 +36,11 @@ public final class HubClient {
     }
 
     /// 发一个请求，同步等答复（在调用方自己的线程上；壳在后台队列上调）。
-    public func request(_ method: String, _ path: String, body: JSONValue? = nil, timeout: TimeInterval = 5) -> Result<Response, Failure> {
+    public func request(_ method: String, _ path: String, body: JSONValue? = nil, timeout: TimeInterval = 5,
+                        headers: [String: String] = [:]) -> Result<Response, Failure> {
         let payload = body.map { (try? JSONSerialization.data(withJSONObject: $0.any)) ?? Data() } ?? Data()
         var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nX-Luoke-Accessory: \(accessory)\r\nConnection: close\r\n"
+        for (k, v) in headers.sorted(by: { $0.key < $1.key }) { head += "\(k): \(v)\r\n" }
         if body != nil { head += "Content-Type: application/json\r\n" }
         head += "Content-Length: \(payload.count)\r\n\r\n"
 

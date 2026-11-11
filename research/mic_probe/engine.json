@@ -1,0 +1,8 @@
+{
+  "protocol": 1,
+  "name": "录音探测",
+  "kind": "hotkey",
+  "hotkey": {"key": "right_option", "mode": "hold", "arm": true},
+  "run": ["./mic_probe"],
+  "permissions": {"microphone": true}
+}

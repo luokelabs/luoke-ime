@@ -175,7 +175,7 @@ let sandboxTemplate = #"""
 
 ;;; ---------------------------------------------------------------------------
 ;;; 5. 规则 5：麦克风 / 摄像头（默认拒；声明后放行，服务清单取自 Apple 的 appsandbox-common.sb 里
-;;;    audio-input / coreaudio-services / camera 三段。放行后能否真的录音未实测，见 README）
+;;;    audio-input / coreaudio-services / camera 三段。麦克风放行后真录音已实测够用，摄像头未实测，见 research/seatbelt/README.md）
 ;;; ---------------------------------------------------------------------------
 (deny device-microphone (with message (tag "microphone")))
 (deny device-camera (with message (tag "camera")))

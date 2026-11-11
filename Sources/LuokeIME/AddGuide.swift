@@ -134,9 +134,16 @@ struct AddGuideView: View {
         .foregroundStyle(Color.lkForeground)
     }
 
+    /// 包里的应用图标。从仓库直接跑出图（--render-guide）时包里没有，用 LUOKE_RENDER_ICON 指的那张（Resources/App/AppIcon.png）。
+    static var appIcon: NSImage {
+        Bundle.main.image(forResource: "AppIcon")
+            ?? ProcessInfo.processInfo.environment["LUOKE_RENDER_ICON"].flatMap(NSImage.init(contentsOfFile:))
+            ?? NSApp.applicationIconImage
+    }
+
     private var header: some View {
         HStack(alignment: .center, spacing: 14) {
-            Image(nsImage: Bundle.main.image(forResource: "AppIcon") ?? NSApp.applicationIconImage)
+            Image(nsImage: Self.appIcon)
                 .resizable().frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.added ? "加好了，螺壳可以用了" : "还差一步：把螺壳添加到系统")

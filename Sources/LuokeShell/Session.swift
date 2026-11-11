@@ -73,6 +73,9 @@ public struct SessionView: Equatable {
     public var predictHint = false
     /// 联想候选打开了：`candidates` 是联想，数字选。
     public var predicting = false
+    /// 语音（声明了麦克风的快捷键引擎）的状态：按住在听，松开后在识别、整理。候选窗据此在提示行前画一个会动的点。
+    public enum Voice: Equatable { case preparing, listening, working }
+    public var voice: Voice?
 
     public init() {}
 }
@@ -122,6 +125,8 @@ public final class Session {
     public var personal: PersonalEngine?
     /// 联想：上屏后宿主经转问去问个人化组件（序号、前文、应用），答复回来后调 `receivePredictions`。
     public var predictor: ((_ id: Int, _ context: String, _ app: String?) -> Void)?
+    /// 本机的使用计数（Usage）：只记次数。
+    public var usage: Usage?
     public private(set) var english = false
 
     private let clock: Clock
@@ -135,6 +140,11 @@ public final class Session {
     // 壳在这个输入框里见过的文字：上屏的和放行的。读不到前文时用它，也用于"数字后保持半角"。
     private var history = ""
     private var notice: String?
+    /// 第一次用时的提示：候选到了也留着，打完一段才收，不然一闪就没了、又只提示一次。
+    private var firstUseNotice: String?
+    /// 带着第一次用时的提示打过字：这一段打完时告诉宿主（onFirstUseNoticeSeen），宿主才记成提示过。
+    private var firstUseTyped = false
+    public var onFirstUseNoticeSeen: (() -> Void)?
     // 反馈
     /// told：这次上屏告诉了打字引擎（安全输入、暂停、"不记录"时不告诉，之后的退格也不告诉）；recorded：个人化组件那边的序号。
     private var lastCommit: (id: Int, at: TimeInterval, followedBy: String, told: Bool, recorded: Int?)?
@@ -150,6 +160,8 @@ public final class Session {
     // 快捷键
     private var pressing: (modifier: KeyEvent.Modifier, since: TimeInterval, clean: Bool)?
     private var hot: HotSession?
+    /// 声明了 arm 的快捷键引擎：按下时已经发了 `arm`、还没确认是按住的那一次（确认了就用这个号发 `start`）。
+    private var armed: (engine: Int, id: Int)?
     private var lastView: SessionView?
     /// 上一次画出来的候选窗。新询问的答复画出来之前继续显示它，免得每敲一个键候选窗闪一下。
     private var lastDrawn: SessionView?
@@ -194,6 +206,10 @@ public final class Session {
         var engine: Int
         var id: Int
         var shown = ""
+        /// 引擎给的提示（show 的 hint）。
+        var hint: String?
+        /// 话筒真的在收音了（show 的 listening，不写时算是）。
+        var listening = true
         var stopSentAt: TimeInterval?
         var context: String?
     }
@@ -236,7 +252,7 @@ public final class Session {
         default: break
         }
         shiftClean = false
-        pressing?.clean = false
+        spoilPress()
 
         if pendingComma != nil, let handled = resolvePendingComma(e) { return handled }
         if hot != nil { return handleInHotkeySession(e) }
@@ -296,6 +312,7 @@ public final class Session {
         pump(render: false)
         settleComma(",", full: true)
         if hot != nil { endHotkey(reason: .focus, commitShown: true) }
+        disarm(.focus)
         if isComposing { finish(budget: 0, auto: true) }
         flushDeleted()
         forgetHistory()
@@ -309,7 +326,7 @@ public final class Session {
     /// 按了鼠标（比如 ⇧ 加点击扩选）：之后松开 Shift 不算单按。
     public func pointerPressed() {
         shiftClean = false
-        pressing?.clean = false
+        spoilPress()
         forgetHistory() // 光标可能被点到了别处
         if prediction != nil {
             prediction = nil
@@ -340,9 +357,16 @@ public final class Session {
         render()
     }
 
+    /// 宿主显示第一次用时的提示：留到这一段打完（上屏或取消）。
+    public func setFirstUseNotice(_ text: String) {
+        firstUseNotice = text
+        render()
+    }
+
     /// 宿主设置英文模式（比如应用例外里的"默认英文"）。
     public func setEnglish(_ on: Bool) {
         if on, isComposing { commitRaw() }
+        if english, !on { flushEnglish() }
         prediction = nil
         english = on
         render()
@@ -381,6 +405,7 @@ public final class Session {
             }
         }
         if e.key == .backspace, !e.flags.contains(.shift), lastCommit != nil {
+            if backspaceRun == 0 { count(.backspaceAfterCommit) }
             backspaceRun += 1
             lastBackspaceAt = now
         }
@@ -417,6 +442,17 @@ public final class Session {
                 if revealUndrawn() { return true }
                 if (1...9).contains(d), d <= pageSize { select(pageStart + d - 1) }
                 return true
+            }
+            // 以词定字：「[」取高亮候选的第一个字、「]」取最后一个字，剩下的键接着打（和数字选词一样先等第一份答复）
+            if c == "[" || c == "]" {
+                if query?.answer == nil { awaitFirstAnswer() }
+                if let q = query, let a = q.answer, !a.candidates.isEmpty {
+                    if revealUndrawn() { return true }
+                    if choose(q.highlighted, char: c == "[" ? "first" : "last") {
+                        if input.isEmpty { commitAll(auto: false, predict: true) } else { sendQuery() }
+                    }
+                    return true
+                }
             }
             switch (settings.pagingKeys, c) {
             case (.minusEqual, "-") where pageStart == 0:
@@ -520,11 +556,14 @@ public final class Session {
         if input.isEmpty { commitAll(auto: false, predict: true) } else { sendQuery() }
     }
 
-    /// 只把候选并入已选部分，不发询问也不上屏。
-    private func choose(_ index: Int) -> Bool {
+    /// 只把候选并入已选部分，不发询问也不上屏。`char`（以词定字）：只要它的第一个字（`first`）或最后一个字（`last`）。
+    private func choose(_ index: Int, char: String? = nil) -> Bool {
         guard let a = query?.answer, a.candidates.indices.contains(index) else { return false }
         let c = a.candidates[index]
-        pieces.append(Piece(input: String(input.prefix(c.consume)), text: c.text, index: index, top: a.candidates.first?.text))
+        var text = c.text
+        if let char, let one = char == "first" ? text.first : text.last { text = String(one) }
+        pieces.append(Piece(input: String(input.prefix(c.consume)), text: text, index: index, top: a.candidates.first?.text,
+                            char: char == nil || text == c.text ? nil : char))
         input = String(input.dropFirst(c.consume))
         query = nil
         return true
@@ -571,6 +610,9 @@ public final class Session {
             let recorded = record(text, kind: .typing, source: engine.id, auto: auto, context: contextBase, pieces: pieces)
             lastCommit = (id, now, "", told, recorded)
             backspaceRun = 0
+            count(.commit)
+            count(.pickFirst, pieces.filter { $0.index == 0 }.count)
+            count(.pickOther, pieces.filter { ($0.index ?? 0) > 0 }.count)
         }
         reset()
         if predict, !inserted.isEmpty { requestPrediction(after: before + inserted) }
@@ -606,6 +648,9 @@ public final class Session {
         query = nil
         contextBase = ""
         notice = nil
+        if firstUseNotice != nil, firstUseTyped { onFirstUseNoticeSeen?() }
+        firstUseNotice = nil
+        firstUseTyped = false
     }
 
     private func move(_ delta: Int) {
@@ -760,6 +805,7 @@ public final class Session {
     // MARK: - 放行、上屏
 
     private func passThrough(_ e: KeyEvent) -> Bool {
+        if english { noteEnglish(e) }
         switch e.key {
         case let .character(c) where !e.isChord:
             // 中文后面直接敲字母、数字（英文模式，或中文模式下的数字）：补一个空格再上屏。
@@ -790,7 +836,7 @@ public final class Session {
     /// 上屏，返回实际上屏的文字。`after` 是光标前的那个字（知道时），用来决定要不要在中英文之间补空格。
     @discardableResult
     private func insert(_ text: String, after prev: Character? = nil) -> String {
-        var out = text
+        var out = settings.autoSpace ? Self.spaced(text) : text // 一段里面的交界（比如语音一整句）也照规矩
         if autoSpaceAllowed(), let p = prev, let f = text.first, Self.needsSpace(p, f) {
             autoSpaceAt = history.count
             out = " " + text
@@ -802,9 +848,40 @@ public final class Session {
     }
 
     private func forgetHistory() {
+        flushEnglish() // 光标动了、切走了：英文模式下攒的那一段到此为止
         history = ""
         autoSpaceAt = nil
         suppressAutoSpace = false
+    }
+
+    // MARK: - 英文模式下敲的字
+
+    /// 英文模式下按键直接交给应用、不经输入法上屏，记忆里原来没有这些字。按按键攒成一段（退格去掉最后一个字），
+    /// 回车、挪光标、点鼠标、切走、切回中文时转给个人化组件，标成 english：记忆只从里面取英文专名（Claude Code、GitHub），
+    /// 给语音当热词。规矩和中文一样（安全输入、禁止记录、暂停时 mayForward 为假，凭证由组件遮）；
+    /// 终端里不攒：命令行里输密码的提示不一定开安全输入。
+    private var englishRun = ""
+
+    private func noteEnglish(_ e: KeyEvent) {
+        guard mayForward, !ShellConfig.terminals.contains(client.appID ?? "") else {
+            englishRun = ""
+            return
+        }
+        switch e.key {
+        case let .character(c) where !e.isChord: englishRun.append(c)
+        case .space: englishRun.append(" ")
+        case .backspace: if !englishRun.isEmpty { englishRun.removeLast() }
+        case .enter: flushEnglish()
+        default: break // 别的键（挪光标、组合键）在 forgetHistory 里收尾
+        }
+        if englishRun.count >= 200 { flushEnglish() }
+    }
+
+    private func flushEnglish() {
+        let t = englishRun.trimmingCharacters(in: .whitespacesAndNewlines)
+        englishRun = ""
+        guard t.count >= 2, t.contains(where: \.isLetter) else { return }
+        record(t, kind: .english, source: "english")
     }
 
     private func trimHistory() {
@@ -851,6 +928,7 @@ public final class Session {
             p.items = Array(list)
             p.shownAt = now
             prediction = p
+            count(.predictShown)
         }
         render()
     }
@@ -892,6 +970,7 @@ public final class Session {
             tabCaret = client.caretLocation() // 还没放显示串：这就是光标的位置
             p.open = true
             prediction = p
+            count(.predictOpened)
             return true
         }
         prediction = nil
@@ -919,6 +998,8 @@ public final class Session {
         }
         tabCaret = nil
         record(text, kind: .predict, source: personal?.id ?? "personal", context: p.context)
+        count(.predictPicked)
+        count(.predictChars, text.count)
         requestPrediction(after: p.context + inserted)
     }
 
@@ -944,6 +1025,17 @@ public final class Session {
         (isCJK(a) && isLatin(b)) || (isLatin(a) && isCJK(b))
     }
 
+    /// 一段文字里面汉字和半角字母、数字挨着的地方补一个空格（已经有空格、挨着标点的不动）。
+    static func spaced(_ text: String) -> String {
+        var out = "", prev: Character?
+        for c in text {
+            if let p = prev, needsSpace(p, c) { out.append(" ") }
+            out.append(c)
+            prev = c
+        }
+        return out
+    }
+
     private func flushDeleted() {
         if let c = lastCommit, backspaceRun > 0 {
             if let engine = typing, engine.manifest.feedback, c.told {
@@ -965,6 +1057,12 @@ public final class Session {
                                     userStopped: !client.mayRecord, enabled: client.memoryConsented))
     }
     private var sawSecureInput = false
+
+    /// 记一笔使用计数：密码框里（这一段里碰到过也算）、暂停所有记录、禁止记录的应用里不记。和记忆记录开没开无关：只有次数。
+    private func count(_ e: Usage.Event, _ n: Int = 1) {
+        guard let usage, !client.isSecureInput, !sawSecureInput, client.mayRecord else { return }
+        usage.add(e, n)
+    }
 
     /// 打字引擎能不能收反馈（学改选过的词）。
     private var mayLearn: Bool { policy.typingFeedback }
@@ -1001,8 +1099,31 @@ public final class Session {
         } else {
             shiftClean = false
         }
-        if let p = pressing, p.modifier != m { pressing?.clean = false } // 快捷键的修饰键按着时又按了别的修饰键：是组合键
-        if hotkeyIndex(for: m) != nil { pressing = (m, now, true) }
+        // 同一个修饰键还按着又来一次按下（试用时一次按下来了两个，相隔约 70 ms）：当成同一次，不重新 arm，
+        // 不然引擎的录音要关了重开、开头那一点就丢了。隔得久的照新的一次算（万一松开的事件丢了，不至于一直按不出来）
+        if let p = pressing, p.modifier == m, now - p.since < 0.3 { return }
+        if let p = pressing, p.modifier != m { spoilPress() } // 快捷键的修饰键按着时又按了别的修饰键：是组合键
+        guard let i = hotkeyIndex(for: m) else { return }
+        pressing = (m, now, true)
+        // 声明了 arm 的（语音）：按下就让引擎开始准备，确认是按住了再 start；密码框里不触发
+        if hot == nil, let h = hotkeys[i].manifest.hotkey, h.arm, h.mode == .hold, !client.isSecureInput {
+            disarm(.key)
+            let id = hotkeys[i].channel.nextID()
+            hotkeys[i].channel.send(.arm(id: id))
+            armed = (i, id)
+        }
+    }
+
+    /// 按着快捷键的修饰键时按了别的键、别的修饰键或鼠标：是组合键，不触发；按下时发过 arm 的取消掉。
+    private func spoilPress() {
+        pressing?.clean = false
+        disarm(.key)
+    }
+
+    private func disarm(_ reason: ShellMessage.CancelReason) {
+        guard let a = armed else { return }
+        armed = nil
+        if a.engine < hotkeys.count { hotkeys[a.engine].channel.send(.cancel(id: a.id, reason: reason)) } // 按着时换过引擎就不用告诉了
     }
 
     private func modifierUp(_ m: KeyEvent.Modifier, flags: KeyEvent.Flags) {
@@ -1012,6 +1133,7 @@ public final class Session {
         }
         guard let p = pressing, p.modifier == m else { return }
         pressing = nil
+        disarm(.short) // 发过 arm、没按够就松开了
         guard let i = hotkeyIndex(for: m), let mode = hotkeys[i].manifest.hotkey?.mode else { return }
         switch mode {
         case .hold:
@@ -1028,6 +1150,7 @@ public final class Session {
 
     private func toggleEnglish() {
         if !english, isComposing { commitRaw() }
+        if english { flushEnglish() }
         english.toggle()
     }
 
@@ -1043,6 +1166,10 @@ public final class Session {
     }
 
     private func startHotkey(_ i: Int) {
+        guard !client.isSecureInput else { // 密码框里不触发快捷键引擎（语音不能往密码框里出字）
+            spoilPress()
+            return
+        }
         if isComposing { finish(budget: timing.spaceWait, auto: false) }
         prediction = nil
         flushDeleted()         // 之后的退格删的是快捷键引擎的文字，不算打字引擎上屏后的修改
@@ -1051,7 +1178,9 @@ public final class Session {
         let limit = max(engine.manifest.context, recordingContext, settings.autoSpace ? 1 : 0)
         let read: String? = limit > 0 ? readContext(limit: limit) : nil
         let ctx = engine.manifest.context > 0 ? read.map { String($0.suffix(engine.manifest.context)) } : nil
-        let id = engine.channel.nextID()
+        var id = engine.channel.nextID()
+        if let a = armed, a.engine == i { id = a.id } // 按下时发过 arm：同一个号
+        armed = nil
         engine.channel.send(.start(id: id, context: ctx, app: engine.manifest.app ? client.appID : nil))
         hot = HotSession(engine: i, id: id, context: read)
     }
@@ -1086,8 +1215,10 @@ public final class Session {
     private func applyHotkey(_ m: EngineMessage, engine i: Int) {
         guard var h = hot, h.engine == i, m.id == h.id else { return }
         switch m {
-        case let .show(_, text):
+        case let .show(_, text, hint, listening):
             h.shown = text
+            h.hint = hint
+            h.listening = listening ?? true
             hot = h
         case let .commit(_, text):
             hot = nil
@@ -1106,9 +1237,19 @@ public final class Session {
     private func render() {
         var v = SessionView()
         v.english = english
-        v.notice = notice
+        v.notice = notice ?? firstUseNotice
+        if firstUseNotice != nil, notice == nil, isComposing { firstUseTyped = true }
         if let h = hot {
-            v.marked = h.shown
+            v.marked = settings.autoSpace ? Self.spaced(h.shown) : h.shown
+            // 用麦克风的（语音）一直提示在什么状态：话筒还没开始收音时「准备中…」（黄点，等它变红再说），
+            // 按住时「正在听」，松开后「识别中…」，引擎给了提示（比如「整理中…」）就用它
+            if hotkeys[h.engine].manifest.permissions.microphone {
+                let preparing = h.stopSentAt == nil && !h.listening
+                v.voice = h.stopSentAt != nil ? .working : preparing ? .preparing : .listening
+                if v.notice == nil { v.notice = h.hint ?? (h.stopSentAt != nil ? "识别中…" : preparing ? "准备中…" : "正在听") }
+            } else if v.notice == nil {
+                v.notice = h.hint
+            }
         } else if pendingComma != nil {
             v.marked = ","
         } else if isComposing {

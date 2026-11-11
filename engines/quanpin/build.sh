@@ -8,7 +8,7 @@ cd $here
 src=../xiaohe
 export MACOSX_DEPLOYMENT_TARGET=14.0   # 同小鹤
 lib=$root/vendor/librime
-[[ -f $lib/lib/librime.1.dylib ]] || $root/scripts/build-librime.sh
+$root/scripts/build-librime.sh   # 编好的版本对得上就跳过
 swiftc -O -target arm64-apple-macos$MACOSX_DEPLOYMENT_TARGET -o quanpin $src/*.swift
 cc -O2 -mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET -o rime_helper $src/rime_helper.c -I$lib/include -L$lib/lib -lrime \
   -Wl,-rpath,@loader_path/lib -Wl,-rpath,$lib/lib
