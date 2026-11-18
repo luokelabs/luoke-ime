@@ -83,9 +83,9 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
         guard let m = e.manifest else { return false }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let place = e.dir.path.hasPrefix(home) ? "~" + e.dir.path.dropFirst(home.count) : e.dir.path
-        var text = "它装在 \(place)，不是随螺壳发布的。启用以后它：\n" + ThirdParty.describe(m).map { "• " + $0 }.joined(separator: "\n")
-        if let b = bundled { text += "\n\n它和螺壳自带的「\(b.manifest?.name ?? b.id)」同名：启用后用它代替自带的那份。" }
-        text += "\n\n以后它的引擎说明里这些变了，会再问你。"
+        var text = "位置：\(place)，非螺壳自带。启用后，该引擎：\n" + ThirdParty.describe(m).map { "• " + $0 }.joined(separator: "\n")
+        if let b = bundled { text += "\n\n与螺壳自带的「\(b.manifest?.name ?? b.id)」同名，启用后将替代自带版本。" }
+        text += "\n\n引擎说明中的上述内容变化时，将再次请求确认。"
         let alert = NSAlert()
         alert.messageText = "启用第三方引擎「\(m.name)」？"
         alert.informativeText = text
@@ -103,10 +103,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate {
     /// 清掉打字引擎学到的词：先弹系统的确认框（默认按钮是取消），确认了再告诉引擎。确认框要把输入法拉到前台，关掉后还给原来的应用。
     static func confirmForgetLearned(_ t: EngineConnection) {
         let alert = NSAlert()
-        alert.messageText = "清掉「\(t.manifest.name)」学到的词？"
-        alert.informativeText = "你改选过、它记住放在前面的词会全部清掉，以后按默认的顺序出；按 Shift+⌫ 忘掉的词照旧不出。清掉以后找不回来。"
+        alert.messageText = "清除「\(t.manifest.name)」的已学词语？"
+        alert.informativeText = "因改选而排在前面的词语将全部清除，此后按默认顺序排列；已用 Shift+⌫ 忘记的词语仍不显示。清除后无法恢复。"
         alert.addButton(withTitle: "取消")
-        let clear = alert.addButton(withTitle: "清掉")
+        let clear = alert.addButton(withTitle: "清除")
         clear.hasDestructiveAction = true
         let front = NSWorkspace.shared.frontmostApplication
         let mine = front?.processIdentifier == ProcessInfo.processInfo.processIdentifier
@@ -318,30 +318,30 @@ private struct GlobalPage: View {
                         })).toggleStyle(.checkbox)
                     }
                 }
-                Text("打开后拼法相近的字也会出现，打对的字偶尔会排到后面。").font(.caption).foregroundStyle(.secondary)
+                Text("开启后同时给出拼法相近的字，准确的候选可能排序靠后。").font(.caption).foregroundStyle(.secondary)
             }
             Section(lk: "语音") {
-                Toggle("语音输入：按住\(voiceKeyName(c.voiceKey ?? .rightOption))说话，松开上屏", isOn: Binding(get: { c.voiceOn }, set: { v in model.update { $0.voiceOn = v } }))
+                Toggle("语音输入", isOn: Binding(get: { c.voiceOn }, set: { v in model.update { $0.voiceOn = v } }))
                 if c.voiceOn {
-                    Picker("按住哪个键说话", selection: Binding(get: { c.voiceKey ?? .rightOption }, set: { v in model.update { $0.voiceKey = v == .rightOption ? nil : v } })) {
+                    Picker("语音输入按键", selection: Binding(get: { c.voiceKey ?? .rightOption }, set: { v in model.update { $0.voiceKey = v == .rightOption ? nil : v } })) {
                         ForEach([Manifest.Hotkey.Key.rightOption, .rightCommand, .rightControl], id: \.self) { Text(voiceKeyName($0)).tag($0) }
                     }
-                    Text("按右 Alt 没反应的（外接 Windows 键盘、在系统设置里对调过修饰键），多半是它发出来的成了右 ⌘，选右 ⌘ 试试。").font(.caption).foregroundStyle(.secondary)
-                    Toggle("说完后整理：去掉口头禅、理顺改口", isOn: Binding(get: { c.voiceTidyActive }, set: { v in model.update { $0.voiceTidy = v } }))
+                    Text("使用外接 Windows 键盘或在系统设置中对调过修饰键时，右 Alt 可能被识别为右 ⌘，此时请选择右 ⌘。").font(.caption).foregroundStyle(.secondary)
+                    Toggle("语音整理：去除口头禅、修正改口、整理列表和分段", isOn: Binding(get: { c.voiceTidyActive }, set: { v in model.update { $0.voiceTidy = v } }))
                     if model.microphoneDenied {
                         HStack {
-                            Text("没有麦克风权限，说话听不到。").font(.caption).foregroundStyle(.red)
-                            Button("去系统设置里打开") { model.openMicrophoneSettings() }.controlSize(.small)
+                            Text("未获得麦克风权限，无法录音。").font(.caption).foregroundStyle(Color.lkDanger)
+                            Button("打开系统设置") { model.openMicrophoneSettings() }.controlSize(.small)
                         }
                     }
                 }
                 Text(c.voiceOn && !ShellConfig.voiceTidyDefault
-                     ? "识别和整理都由螺壳在这台 Mac 上做，要先装好螺壳。内存 24 GB 及以下的 Mac 上整理要等好几秒，默认不整理。"
-                     : "识别和整理都由螺壳在这台 Mac 上做，要先装好螺壳。打开时系统会问一次麦克风权限。")
+                     ? "按住所选按键说话，松开后上屏。识别和整理均由螺壳在本机完成，需安装螺壳；内存 24 GB 及以下的 Mac 上整理耗时数秒，默认关闭。"
+                     : "按住所选按键说话，松开后上屏。识别和整理均由螺壳在本机完成，需安装螺壳；开启时系统将请求麦克风权限。")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section(lk: "中英文") {
-                Picker("进入应用时默认", selection: Binding(get: { c.defaultEnglish }, set: { v in model.update { $0.setDefaultEnglish(v) } })) {
+                Picker("进入应用时的默认模式", selection: Binding(get: { c.defaultEnglish }, set: { v in model.update { $0.setDefaultEnglish(v) } })) {
                     Text("中文").tag(false)
                     Text("英文").tag(true)
                 }
@@ -350,12 +350,12 @@ private struct GlobalPage: View {
             }
             Section(lk: "排版") {
                 Toggle("中英文之间自动加空格", isOn: Binding(get: { c.settings.autoSpace }, set: { v in model.update { $0.settings.autoSpace = v } }))
-                Toggle("中文状态下 { } 打成「」", isOn: Binding(get: { c.settings.cornerBraces }, set: { v in model.update { $0.settings.cornerBraces = v } }))
+                Toggle("中文状态下 { } 输入为「」", isOn: Binding(get: { c.settings.cornerBraces }, set: { v in model.update { $0.settings.cornerBraces = v } }))
             }
             Section(lk: "候选窗口") {
                 Stepper("字号：\(Int(c.fontSize))", value: Binding(get: { c.fontSize }, set: { v in model.update { $0.fontSize = min(max(v, 10), 40) } }),
                         in: 10...40, step: 1)
-                Picker("排列", selection: Binding(get: { c.settings.orientation }, set: { v in model.update { $0.settings.orientation = v } })) {
+                Picker("候选排列", selection: Binding(get: { c.settings.orientation }, set: { v in model.update { $0.settings.orientation = v } })) {
                     Text("横排").tag(ShellSettings.Orientation.horizontal)
                     Text("竖排").tag(ShellSettings.Orientation.vertical)
                 }
@@ -366,9 +366,9 @@ private struct GlobalPage: View {
                     Text("- 和 =").tag(ShellSettings.PagingKeys.minusEqual)
                     Text(", 和 .").tag(ShellSettings.PagingKeys.commaPeriod)
                 }
-                Picker("拼音显示在", selection: Binding(get: { c.inline }, set: { v in model.update { $0.inline = v } })) {
-                    Text("输入框里").tag(true)
-                    Text("候选窗口里").tag(false)
+                Picker("拼音显示位置", selection: Binding(get: { c.inline }, set: { v in model.update { $0.inline = v } })) {
+                    Text("输入框").tag(true)
+                    Text("候选窗口").tag(false)
                 }
             }
             if model.hasPersonal {
@@ -379,13 +379,13 @@ private struct GlobalPage: View {
                 }
                 // 记忆记录的总开关在这里（luokelabs/luoke-ime#1 的后续）；记忆页只讲记了什么、怎么看和删
                 Section(lk: "记忆记录") {
-                    SettingRow(title: "记录输入内容到记忆", detail: "记在本机的螺壳记忆里，用来联想、让候选更合你的习惯。关掉不删已记下的。") {
+                    SettingRow(title: "记录输入内容到记忆", detail: "保存在本机的螺壳记忆中，用于联想和候选排序。关闭后已有记录保留。") {
                         Text(model.recordingState).foregroundStyle(.secondary)
                         // 这个名字主控首次运行的完成页、输入法的添加引导里原样引用了（luoke-core 246279c）；改名时告诉 luoke-core 一起改
                         Toggle("记录输入内容到记忆", isOn: Binding(get: { model.memoryConsented }, set: { model.setMemoryConsent($0) })).toggleStyle(.switch).labelsHidden()
                     }
                     .id("memory")
-                    SettingRow(title: "暂停所有记录", detail: "临时不记，随时恢复。") {
+                    SettingRow(title: "暂停所有记录", detail: "暂停期间不记录，可随时恢复。") {
                         Toggle("暂停所有记录", isOn: Binding(get: { c.recordingPaused }, set: { v in model.update { $0.recordingPaused = v } })).toggleStyle(.switch).labelsHidden()
                     }
                     .disabled(!model.memoryConsented)
@@ -420,8 +420,8 @@ private struct AppsPage: View {
                 AppDetail(model: model, app: app)
             } else {
                 VStack(spacing: 8) {
-                    Text(model.apps.isEmpty ? "还没有单独设置的应用" : "选一个应用")
-                    Text("在应用里打开输入法菜单，选「此应用设置」。")
+                    Text(model.apps.isEmpty ? "暂无单独设置的应用" : "选择应用")
+                    Text("在应用中打开输入法菜单，选择「此应用设置」。")
                         .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                 }
                 .padding().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -444,23 +444,23 @@ private struct AppDetail: View {
                     Text("中文").tag(Choice.off)
                     Text("英文").tag(Choice.on)
                 }
-                Picker("拼音显示在", selection: binding(\.inline)) {
-                    Text("跟随全局（\(c.inline ? "输入框里" : "候选窗口里")）").tag(Choice.follow)
-                    Text("输入框里").tag(Choice.on)
-                    Text("候选窗口里").tag(Choice.off)
+                Picker("拼音显示位置", selection: binding(\.inline)) {
+                    Text("跟随全局（\(c.inline ? "输入框" : "候选窗口")）").tag(Choice.follow)
+                    Text("输入框").tag(Choice.on)
+                    Text("候选窗口").tag(Choice.off)
                 }
                 if model.hasPersonal {
                     Picker("联想", selection: binding(\.predict)) {
                         // 终端默认不联想（ShellConfig.terminals）：照实显示跟随的结果
-                        Text(ShellConfig.terminals.contains(app) ? "跟随默认（终端里关）" : "跟随全局（\(c.settings.predict ? "开" : "关")）").tag(Choice.follow)
-                        Text("开").tag(Choice.on)
-                        Text("关").tag(Choice.off)
+                        Text(ShellConfig.terminals.contains(app) ? "跟随默认（终端中关闭）" : "跟随全局（\(c.settings.predict ? "开启" : "关闭")）").tag(Choice.follow)
+                        Text("开启").tag(Choice.on)
+                        Text("关闭").tag(Choice.off)
                     }
                     Picker("记忆记录", selection: Binding(get: { a.noRecord }, set: { v in model.update { $0.setApp(app) { $0.noRecord = v } } })) {
                         Text("跟随全局（\(model.globalRecording)）").tag(false)
                         Text("禁止记录").tag(true)
                     }
-                    Text("全局关着或暂停时，这里都不记。")
+                    Text("全局记录关闭或暂停时，此应用同样不记录。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -485,23 +485,23 @@ private struct PrivacyPage: View {
         Form {
             if model.hasPersonal {
                 Section(lk: "记忆") {
-                    SettingRow(title: "记忆记录", detail: "记下你打的字、在哪个应用打的，连同开始时光标前的一段文字（可能是别人写的，只用来理解上下文），存在本机的螺壳记忆里。密码框里、暂停时、禁止记录的应用里不记；密码、验证码、卡号这类会遮掉。") {
+                    SettingRow(title: "记忆记录", detail: "记录输入的文字和所在应用，以及开始输入时光标前的一段文字（可能由他人所写，仅用于理解上下文），保存在本机的螺壳记忆中。密码框、暂停期间和禁止记录的应用中不记录；密码、验证码、卡号等内容会被遮盖。") {
                         Text(model.recordingState).foregroundStyle(.secondary)
-                        Button("去开关") { model.focusMemory = true; model.tab = .global }.buttonStyle(.bordered)
+                        Button("前往设置") { model.focusMemory = true; model.tab = .global }.buttonStyle(.bordered)
                     }
-                    SettingRow(title: "查看和管理记忆", detail: model.memoryAppInstalled ? "每一条都能看、能删。" : "要先装螺壳。") {
+                    SettingRow(title: "查看和管理记忆", detail: model.memoryAppInstalled ? "可逐条查看和删除。" : "需安装螺壳。") {
                         Button("打开") { model.openMemory() }.buttonStyle(.bordered).disabled(!model.memoryAppInstalled)
                     }
                 }
             }
             if let t = model.learnedEngine {
                 // 学到的、忘掉的都存在当前输入方案自己那里：换成别的方案，这里显示那个方案的
-                Section(lk: "「\(t.manifest.name)」的词") {
-                    SettingRow(title: "学到的词", detail: "你改选过的词会排到前面。清掉后按默认顺序出。") {
-                        Button("全部清掉") { model.forgetLearned() }.buttonStyle(.bordered).disabled(t.state != .running)
+                Section(lk: "「\(t.manifest.name)」的词语") {
+                    SettingRow(title: "已学词语", detail: "改选过的词语排序靠前。清除后按默认顺序排列。") {
+                        Button("全部清除") { model.forgetLearned() }.buttonStyle(.bordered).disabled(t.state != .running)
                     }
-                    SettingRow(title: "忘掉的词", detail: model.forgotten.items.isEmpty && model.forgotten.older == 0
-                               ? "还没有。候选上按 Shift+⌫ 忘掉一个词。" : "这些词不再出现，点撤销恢复。") { EmptyView() }
+                    SettingRow(title: "已忘记词语", detail: model.forgotten.items.isEmpty && model.forgotten.older == 0
+                               ? "暂无。在候选上按 Shift+⌫ 可忘记词语。" : "以下词语不再显示，可撤销恢复。") { EmptyView() }
                     ForEach(model.forgotten.items, id: \.self) { w in
                         HStack {
                             Text(w.text)
@@ -511,7 +511,7 @@ private struct PrivacyPage: View {
                         }
                     }
                     if model.forgotten.older > 0 {
-                        Text("另有 \(model.forgotten.older) 个早先忘掉的词列不出来，照旧不出。")
+                        Text("另有 \(model.forgotten.older) 个较早忘记的词语未列出，仍不显示。")
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
@@ -530,14 +530,14 @@ private struct ToolsPage: View {
         let u = model.usage
         Form {
             Section(lk: "使用统计") {
-                SettingRow(title: "最近 7 天", detail: "只在本机记次数，不记打了什么、在哪个应用，也不上传；密码框里、暂停所有记录、禁止记录的应用里不记。用来看候选和联想排得好不好。") {
+                SettingRow(title: "最近 7 天", detail: "仅在本机统计次数，不记录输入内容和应用，不上传；密码框、暂停所有记录期间和禁止记录的应用中不统计。用于评估候选和联想的排序质量。") {
                     Button("清零") { model.resetUsage() }.buttonStyle(.bordered).disabled(u.isEmpty)
                 }
                 let picks = (u[.pickFirst] ?? 0) + (u[.pickOther] ?? 0)
-                Text("上屏 \(u[.commit] ?? 0) 次，选的候选里首选占 \(Self.percent(u[.pickFirst] ?? 0, picks))，上屏后马上按退格的占 \(Self.percent(u[.backspaceAfterCommit] ?? 0, u[.commit] ?? 0))")
+                Text("上屏 \(u[.commit] ?? 0) 次；所选候选中首选占比 \(Self.percent(u[.pickFirst] ?? 0, picks))；上屏后立即退格占比 \(Self.percent(u[.backspaceAfterCommit] ?? 0, u[.commit] ?? 0))")
                     .font(.callout)
                 if model.hasPersonal {
-                    Text("联想出现 \(u[.predictShown] ?? 0) 次，打开 \(u[.predictOpened] ?? 0) 次，选了 \(u[.predictPicked] ?? 0) 次（共 \(u[.predictChars] ?? 0) 个字）")
+                    Text("联想显示 \(u[.predictShown] ?? 0) 次，展开 \(u[.predictOpened] ?? 0) 次，选用 \(u[.predictPicked] ?? 0) 次（共 \(u[.predictChars] ?? 0) 字）")
                         .font(.callout)
                 }
             }
@@ -549,12 +549,12 @@ private struct ToolsPage: View {
                         })).toggleStyle(.switch).labelsHidden()
                     }
                 }
-                SettingRow(title: "记录文件夹", detail: "开发模式的记录，留 7 天。") {
+                SettingRow(title: "记录文件夹", detail: "开发模式的记录，保留 7 天。") {
                     Button("打开") { model.open(paths.recordsRoot) }.buttonStyle(.bordered)
                 }
             }
             Section(lk: "文件") {
-                SettingRow(title: "引擎文件夹", detail: "放自己写的引擎。") {
+                SettingRow(title: "引擎文件夹", detail: "用于放置自制引擎。") {
                     Button("打开") { model.open(paths.engines) }.buttonStyle(.bordered)
                 }
                 SettingRow(title: "设置文件") {

@@ -101,9 +101,9 @@ struct AddGuideView: View {
     static let steps = ["打开键盘设置", "文字输入 · 输入法 · 编辑…", "左下角 +", "简体中文", "螺壳", "添加"]
     /// 图文教程：每步一张系统设置的截图（app 包里的 Resources/Guide/step<N>.jpg，简体中文系统、浅色）配一句话。
     static let tutorial = [
-        "打开系统设置的「键盘」，在「文字输入」下面找到「输入法」，点右边的「编辑…」。",
-        "在弹出的窗口里，点左下角的「+」。",
-        "左边选「简体中文」，右边选「螺壳」，点「添加」。回到列表里看到螺壳，点「完成」。",
+        "打开系统设置的「键盘」，在「文字输入」下找到「输入法」，点按右侧的「编辑…」。",
+        "在弹出的窗口中，点按左下角的「+」。",
+        "在左侧选择「简体中文」，右侧选择「螺壳」，点按「添加」。确认列表中已有螺壳后，点按「完成」。",
     ]
     static var guideDirectory = Bundle.main.resourceURL?.appendingPathComponent("Guide")
 
@@ -146,9 +146,9 @@ struct AddGuideView: View {
             Image(nsImage: Self.appIcon)
                 .resizable().frame(width: 48, height: 48)
             VStack(alignment: .leading, spacing: 4) {
-                Text(model.added ? "加好了，螺壳可以用了" : "还差一步：把螺壳添加到系统")
+                Text(model.added ? "螺壳已添加" : "待完成：将螺壳添加到系统")
                     .font(.system(size: 20, weight: .semibold)).kerning(-0.2)
-                Text(model.added ? "以后在菜单栏的输入法菜单里选「螺壳」就能用。" : "macOS 要你自己在系统设置里加一次，以后换新版不用再加。")
+                Text(model.added ? "在菜单栏的输入法菜单中选择「螺壳」即可使用。" : "macOS 要求在系统设置中手动添加一次，此后更新版本无需重复添加。")
                     .font(.system(size: 13)).foregroundStyle(Color.lkMuted).fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -158,7 +158,7 @@ struct AddGuideView: View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Image(systemName: "keyboard").font(.system(size: 14)).foregroundStyle(Color.lkMuted)
-                Text("照这几步添加").font(.system(size: 14, weight: .medium))
+                Text("添加步骤").font(.system(size: 14, weight: .medium))
                 Spacer()
                 if !model.added {
                     Button { model.tutorialStep = 0 } label: {
@@ -170,7 +170,7 @@ struct AddGuideView: View {
                 if model.added {
                     LKBadge(text: "已添加", foreground: .lkSuccess, background: .lkSuccessSoft)
                 } else {
-                    LKBadge(text: "待添加", foreground: .lkWarning, background: .lkWarningSoft)
+                    LKBadge(text: "待添加", foreground: .lkWarningText, background: .lkWarningSoft)
                 }
             }
             FlowLayout(spacing: 6, lineSpacing: 8) {
@@ -181,15 +181,15 @@ struct AddGuideView: View {
                         .background(Color.lkMutedBackground, in: .rect(cornerRadius: 6))
                 }
             }
-            Text("英文系统里是 Chinese, Simplified 和 Luoke 螺壳。列表里没有螺壳：先完全退出系统设置（⌘Q）再打开。")
+            Text("英文系统中分别为 Chinese, Simplified 和 Luoke 螺壳。列表中没有螺壳时，完全退出系统设置（⌘Q）后重新打开。")
                 .font(.system(size: 12)).foregroundStyle(Color.lkMuted).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
                 if model.added {
                     Image(systemName: "checkmark.circle.fill").font(.system(size: 13)).foregroundStyle(Color.lkSuccess)
-                    Text("已添加。切过去以后，在任意输入框里打 nihao 试试。").font(.system(size: 13)).foregroundStyle(Color.lkMuted)
+                    Text("已添加。切换到螺壳后，可在任意输入框中输入 nihao 测试。").font(.system(size: 13)).foregroundStyle(Color.lkMuted)
                 } else {
                     ProgressView().controlSize(.mini)
-                    Text("添加好了这里会自动更新").font(.system(size: 13)).foregroundStyle(Color.lkMuted)
+                    Text("添加完成后此处自动更新").font(.system(size: 13)).foregroundStyle(Color.lkMuted)
                 }
             }
         }
@@ -230,7 +230,7 @@ struct AddGuideView: View {
                 if step + 1 < count {
                     Button("下一步") { model.tutorialStep = step + 1 }
                 } else {
-                    Button("看完了") { model.tutorialStep = nil }
+                    Button("完成") { model.tutorialStep = nil }
                 }
             }
             .controlSize(.regular)
@@ -241,7 +241,7 @@ struct AddGuideView: View {
     private var hint: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "lock").font(.system(size: 13)).foregroundStyle(Color.lkMuted).padding(.top, 1)
-            Text("系统可能会提醒「输入法能看到你输入的内容」，所有输入法都有这条。螺壳输入法不联网：你打的字在这台 Mac 上处理，默认记进本机的螺壳记忆，不交给能读到内容的云服务；不想记，可以在设置的「通用」里关掉「记录输入内容到记忆」。")
+            Text("系统可能提示「输入法能看到你输入的内容」，所有输入法均有此提示。螺壳输入法不联网：输入的文字在本机处理，默认记入本机的螺壳记忆，不交给可读取内容的云服务；如不需要记录，可在设置的「通用」中关闭「记录输入内容到记忆」。")
                 .font(.system(size: 12)).foregroundStyle(Color.lkMuted).fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
@@ -250,7 +250,7 @@ struct AddGuideView: View {
 
     private var footer: some View {
         HStack {
-            Button(model.added ? "完成" : "以后再说", action: close).buttonStyle(.borderless).controlSize(.large)
+            Button(model.added ? "完成" : "稍后添加", action: close).buttonStyle(.borderless).controlSize(.large)
                 .foregroundStyle(Color.lkMuted)
             Spacer()
             if model.added {

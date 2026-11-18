@@ -580,6 +580,9 @@ final class EngineManager {
     /// 记忆记录现在实际的状态，菜单和设置窗口照这个写。
     enum RecordingState: Equatable { case unavailable, notConsented, paused, appForbidden, recording }
 
+    /// 螺壳（主控）现在连不连得上：连不上时没有重排、联想和语音转写，打字照常（菜单里提示一行）。
+    var hubReachable: Bool { broker.hub?.reachable ?? false }
+
     func recordingState(in app: String?) -> RecordingState {
         guard let p = personal, p.manifest.permissions.memory else { return .unavailable }
         if case .disabled = p.state { return .unavailable }

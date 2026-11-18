@@ -76,6 +76,8 @@ public struct SessionView: Equatable {
     /// 语音（声明了麦克风的快捷键引擎）的状态：按住在听，松开后在识别、整理。候选窗据此在提示行前画一个会动的点。
     public enum Voice: Equatable { case preparing, listening, working }
     public var voice: Voice?
+    /// 在听时引擎报的音量（0–1，见 `level` 消息）；没报过时为 nil，候选窗照旧画一跳一跳的红点。
+    public var voiceLevel: Double?
 
     public init() {}
 }
@@ -210,6 +212,8 @@ public final class Session {
         var hint: String?
         /// 话筒真的在收音了（show 的 listening，不写时算是）。
         var listening = true
+        /// 引擎报的音量（level 消息）。
+        var level: Double?
         var stopSentAt: TimeInterval?
         var context: String?
     }
@@ -1220,6 +1224,9 @@ public final class Session {
             h.hint = hint
             h.listening = listening ?? true
             hot = h
+        case let .level(_, level):
+            h.level = level
+            hot = h
         case let .commit(_, text):
             hot = nil
             let inserted = insert(text, after: h.context?.last)
@@ -1242,11 +1249,13 @@ public final class Session {
         if let h = hot {
             v.marked = settings.autoSpace ? Self.spaced(h.shown) : h.shown
             // 用麦克风的（语音）一直提示在什么状态：话筒还没开始收音时「准备中…」（黄点，等它变红再说），
-            // 按住时「正在听」，松开后「识别中…」，引擎给了提示（比如「整理中…」）就用它
+            // 按住时「录音中」，松开后到上屏一直是「整理中…」（识别最后一段和整理接得很紧，分成两个提示只是一闪），
+            // 引擎给了别的提示（比如「音量过低，未识别到语音」）就用它
             if hotkeys[h.engine].manifest.permissions.microphone {
                 let preparing = h.stopSentAt == nil && !h.listening
                 v.voice = h.stopSentAt != nil ? .working : preparing ? .preparing : .listening
-                if v.notice == nil { v.notice = h.hint ?? (h.stopSentAt != nil ? "识别中…" : preparing ? "准备中…" : "正在听") }
+                if v.voice == .listening { v.voiceLevel = h.level }
+                if v.notice == nil { v.notice = h.hint ?? (h.stopSentAt != nil ? "整理中…" : preparing ? "准备中…" : "录音中") }
             } else if v.notice == nil {
                 v.notice = h.hint
             }

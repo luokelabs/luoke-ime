@@ -3,10 +3,11 @@
 // - 按下收到 arm 就开始录（16 kHz 单声道 PCM16），收到 cancel 就丢掉；确认按住（start）后开一个转写会话。
 // - 按住期间每隔一会儿（内存 24 GB 及以下的 Mac 1 秒，别的 0.5 秒）送一块新录的音频、要一份草稿，用 show 显示（不上屏）；同一时间只有
 //   一份草稿在算。新草稿多出来的字在接下来的一小段时间里逐字补出来，不一组一组地跳。
+// - 按住、话筒在收音时每块（0.1 秒）发一次 level（0–1），壳在光标旁画成音量条。
 // - 松开（stop）送最后一块、要终稿，commit 上屏；没识别出字就 end。
 // - 主控答 session_lost 就从 seq 0 重送整段；not_ready、busy 照 retry_after 原样重发；按下时请主控预热。
-// - 终稿出来以后请主控整理（luoke-ime.tidy：去口头禅、理顺改口、数字和英文的写法，提示词是同目录的 tidy_prompt.txt），
-//   整理完再上屏；出错或 2.5 秒没回来就上屏没整理的终稿。选项 tidy 为 false 时不整理。
+// - 终稿出来以后请主控整理（luoke-ime.tidy：去口头禅、理顺改口、数字和英文的写法、排列表和分段，提示词是同目录的 tidy_prompt.txt），
+//   整理完再上屏；出错或等不到（2.5 秒起按字数加，最多 5 秒）就上屏没整理的终稿。分了段的松开后整篇一起编辑一次。选项 tidy 为 false 时不整理。
 // - 上下文：记忆里的常用说法（热词，问个人化组件要），加上光标前的字接上前面各段原文的最后 300 字。
 // - 音频只在内存里，会话结束就丢。不做 VAD，只按声音大小判断有没有说话。
 //
@@ -33,8 +34,12 @@ let draftInterval = smallMac ? 1.0 : 0.5
 var lastDraftAt = Date.distantPast
 /// 光标处正显示的草稿和要补到的草稿（逐字补出来）。
 var displayed = "", target = ""
-/// 整理最多等多久，过了就上屏没整理的终稿（壳 stop 之后最多等 10 秒）。
-let tidyWait = 2.5
+/// 逐字补的节奏：草稿实际隔多久来一份（滑动平均，草稿越长、主控越忙越久），和攒着还没补的零头。
+var draftGap = draftInterval, lastTargetAt: Date?, typeBudget = 0.0
+func resetTyping() { displayed = ""; target = ""; draftGap = draftInterval; lastTargetAt = nil; typeBudget = 0 }
+/// 松开后整理最多等多久，过了就上屏没整理的（壳 stop 之后最多等 10 秒）：2.5 秒起，字越多等得越久（编辑要写出整篇），
+/// 每 200 个字多等 1 秒，最多 5 秒。
+func tidyWait(chars: Int) -> Double { min(5, 2.5 + Double(chars) / 200) }
 let q = DispatchQueue(label: "voice")   // 下面的状态都只在这个队列上读写
 
 func send(_ m: [String: Any]) {
@@ -239,7 +244,7 @@ struct Dictation {
     // 整理一大段又太慢）；松开时只剩最后一段要识别、整理
     var segStart = 0            // 这一段（这个会话）的音频从 pcm 的哪里开始
     var segs: [Segment] = []    // 前面几段（松开后最后一段也放进来）
-    var prefix: String { segs.map(\.raw).joined() } // 前面几段的终稿，接在这一段前面显示
+    var prefix: String { joinSegments(segs.map(\.raw)) } // 前面几段的终稿，接在这一段前面显示
     var rolling = false         // 正在要上一段的终稿（新的一段等它回来再开）
     var finalized = false       // 最后一段的终稿也回来了，等各段整理完就上屏
     var lastDraft = ""          // 这一段最近一份草稿（终稿出错时至少上屏它，不丢字）
@@ -250,18 +255,33 @@ struct Dictation {
     var ready = false           // 话筒真的开始收音了（录到的不再全是零）
     var levels: [Float] = []    // 每块（0.1 秒）的音量，dBFS；全是零的块（话筒还没开始收音）不记
     var loud: Int { let f = noiseFloor(levels); return levels.filter { isLoud($0, floor: f) }.count } // 有声音的块数：不到 minLoudBlocks 就当没说话
+    var segLevels = 0           // 这一段的音量从 levels 的哪里开始
+    var rollLevels = 0          // 要上一段终稿时 levels 到了哪里（上一段的终稿回来、新的一段从这里开始）
+    var segLoud: Int { let f = noiseFloor(levels); return levels[min(segLevels, levels.count)...].filter { isLoud($0, floor: f) }.count } // 这一段有声音的块数
     var cursor = ""             // 光标前已经写的字（壳在 start 里给）：交给转写模型当上下文，前面出现过的名字、英文词更容易认对
     var blocked: String?        // 螺壳这次做不了转写（这一版没开放、模型没准备好、没连上）：光标旁一直提示这一句，不再送音频
+    var whole: String?          // 分了段的：松开后整篇一起编辑的结果（列表、分段要看到整篇才排得对）
+    var wholeAsked = false      // 整篇编辑在等答复
 }
 
 /// 螺壳做不了转写时给用户看的一句（按错误码）；别的错误照常重试或退回草稿。
 func blockedHint(_ code: String) -> String? {
     switch code {
-    case "unsupported": return "这一版螺壳还没开放语音输入"
-    case "task_unavailable": return "螺壳的语音模型还没准备好，稍后再试"
-    case "unavailable": return "没连上螺壳，语音输入用不了"
+    case "unsupported": return "当前版本的螺壳不支持语音输入"
+    case "task_unavailable": return "螺壳语音模型准备中，请稍后重试"
+    case "unavailable": return "未连接螺壳，语音输入不可用"
+    case "unknown_accessory": return "螺壳尚未支持此版本输入法，需等待螺壳更新" // 连上了，但这一版不在螺壳验证过的版本里
     default: return nil
     }
+}
+
+/// 显示串和状态：这次做不了转写时（blocked）每一条都带着那句提示。
+/// 壳每收到一条 show 就换掉提示，不带的话话筒开始收音时那条「录音中」会把「未连接螺壳」盖掉，松开后只剩「整理中…」然后什么都没有。
+func show(_ d: Dictation, _ text: String, listening: Bool? = nil) {
+    var m: [String: Any] = ["type": "show", "id": d.id, "text": text]
+    if let l = listening { m["listening"] = l }
+    if let h = d.blocked { m["hint"] = h }
+    send(m)
 }
 
 /// 提示停一会儿再结束这次听写（不上屏）。
@@ -281,14 +301,22 @@ struct Pending {
     var dictation: Int?         // 转写的是哪一次听写（壳的号）；预热为 nil
     var raw: String?            // 整理：没整理的这一段（出错时用它）
     var seg: Int?               // 整理的是第几段
-    var roll = false            // 分段时要的上一段的终稿
+    var whole = false           // 整篇编辑（seg 为 nil）
+    var roll = false           // 分段时要的上一段的终稿
     var method = ""             // 转问的方法
     var isWarmup: Bool { method == "warmup" }
 }
 
-/// 说到多久就在停顿处分段（选项 segment_secs 可改，测试用）；到 maxSegmentSecs 不管停没停都切（主控的上限是 120 秒）。
+/// 说到多久就在停顿处分段（选项 segment_secs 可改，测试用）；到它的两倍不管停没停都切（主控的上限是 120 秒）。
+/// 一段越长，每份草稿越慢（76 秒的一段一份要 2 秒多，字明显跟不上说话），松开后整理也越慢（超过 tidyWait 就上屏没整理的）。
 var segmentSecs = 30.0
-let maxSegmentSecs = 100.0
+var maxSegmentSecs: Double { segmentSecs * 2 }
+
+/// 分段的地方算不算停顿：不算有声音的块，或者比这次的底噪高不到 6 dB（字和字、句和句之间的低谷）。
+/// 只看 isLoud 不够：话筒的底噪在 -40 dBFS 以上时每一块都「有声音」，一直等到硬切。说到 1.5 倍还没等到，放宽到 12 dB。
+func isPause(_ l: Float, floor: Float, secs: Double) -> Bool {
+    !isLoud(l, floor: floor) || l < floor + (secs >= segmentSecs * 1.5 ? 12 : 6)
+}
 
 let recorder = Recorder()
 var current: Dictation?
@@ -346,7 +374,7 @@ func transcribe(_ want: String, roll: Bool = false) {
     d.sentBytes = d.pcm.count
     d.seq += 1
     if want == "draft" { d.draftInFlight = true }
-    if roll { d.rolling = true }
+    if roll { d.rolling = true; d.rollLevels = d.levels.count }
     current = d
     askCounter += 1
     pending[askCounter] = Pending(params: params, dictation: d.id, roll: roll)
@@ -356,15 +384,17 @@ func transcribe(_ want: String, roll: Bool = false) {
 /// 上一段的终稿回来了：接到 prefix 后面，开新的一段；已经松开了就接着要新一段的终稿。
 func rolled(_ text: String) {
     guard var d = current else { return }
-    d.segs.append(Segment(raw: digitsFirst(text.trimmingCharacters(in: .whitespacesAndNewlines)), tidied: nil, done: false))
+    let echoFree = d.segs.isEmpty ? text : stripEcho(text, after: d.cursor + d.prefix)
+    d.segs.append(Segment(raw: digitsFirst(echoFree.trimmingCharacters(in: .whitespacesAndNewlines)), tidied: nil, done: false))
     d.lastDraft = ""
     d.session = UUID().uuidString
     d.seq = 0
     d.segStart = d.sentBytes
+    d.segLevels = d.rollLevels
     d.rolling = false
     d.draftInFlight = false
     current = d
-    target = d.prefix
+    target = unspaced(d.prefix)
     tidy(d.segs.count - 1) // 用户还在说，这一段先在后台整理
     if d.stopped {
         if d.pcm.count > d.sentBytes { transcribe("final") } else { gotFinal("") }
@@ -411,14 +441,18 @@ func cnNumber(_ s: String) -> String? {
 }
 
 /// 紧跟在英文后面的汉字数字（版本号、型号：「beta 二」「iPhone 十七 Pro」「version 二点一」）换成阿拉伯数字，英文和数字之间留一个空格。
-/// 转写模型按中文出数字，整理模型见了「Beta 二」会写成「Beta Two」。后面跟着量词的（「pull 一下」「merge 两次」）不动。
+/// 转写模型按中文出数字，整理模型见了「Beta 二」会写成「Beta Two」。后面跟着量词的（「pull 一下」「merge 两次」）不动；
+/// 单独一个「一」后面接着汉字时也不动（「Mac 一打开就卡」「Excel 一算」的「一……就」）。
 let latinNumeralPattern = try! NSRegularExpression(
     pattern: "([A-Za-z])\\s*((?>[零〇一二两三四五六七八九十百千]+(?:点[零〇一二三四五六七八九十]+)?))(?![下次个遍些起点会直样般定切共位只件条种段份天年月日周趟回把张本句页分秒岁倍台部])(\\s*)(?=([A-Za-z])?)")
 func latinNumerals(_ text: String) -> String {
     let ns = text as NSString
     var out = "", last = 0
     for m in latinNumeralPattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-        guard let n = cnNumber(ns.substring(with: m.range(at: 2))) else { continue }
+        let numeral = ns.substring(with: m.range(at: 2))
+        guard let n = cnNumber(numeral) else { continue }
+        let end = m.range.location + m.range.length
+        if numeral == "一", end < ns.length, (0x4E00...0x9FFF).contains(Int(ns.character(at: end))) { continue }
         let latinAfter = m.range(at: 4).location != NSNotFound
         out += ns.substring(with: NSRange(location: last, length: m.range.location - last))
         out += ns.substring(with: m.range(at: 1)) + " " + n + (latinAfter ? " " : ns.substring(with: m.range(at: 3)))
@@ -427,15 +461,72 @@ func latinNumerals(_ text: String) -> String {
     return out + ns.substring(from: last)
 }
 
-/// 整理前先去掉单独成段的单字语气词（「嗯，」「呃，」「啊，」「额，」：在开头或标点后面、后面跟逗号的），不交给模型：
-/// 小模型常留着开头的「嗯」「啊」。「好啊，」这种跟在字后面的不动。
-let fillerPattern = try! NSRegularExpression(pattern: "(^|[，。！？,.!?\\s])[嗯呃啊额]+[，,]\\s*")
+/// 整理前先由代码去掉语气词，不交给模型（模型常留着；整理太慢、没整理就上屏时也要去掉）：
+/// - 「嗯」「呃」在哪都去掉，连同它带的标点（「好的，嗯。」→「好的。」，「我觉得嗯这个」→「我觉得这个」）；
+/// - 「啊」「额」只去单独成段、后面跟逗号的（「啊，对」）：「好啊」「金额」「额外」不动；
+/// - 「然后呢」后面跟逗号的（口述里接着往下说，9B 整理长段时常留着）；问人的「然后呢？」不动。
+let fillerPatterns: [(NSRegularExpression, String)] = [
+    ("[，,、]\\s*[嗯呃]+(?=[。！？.!?]|$)", ""),
+    ("(^|[，。！？,.!?、\\s])[嗯呃啊额]+[，,、]\\s*", "$1"),
+    ("(^|[。！？.!?\\s])[嗯呃]+[。！？.!?]*\\s*", "$1"),
+    ("[嗯呃]+", ""),
+    ("(^|[，。！？,.!?、\\s])然后呢[，,]\\s*", "$1"),
+].map { (try! NSRegularExpression(pattern: $0.0), $0.1) }
 func stripFillers(_ text: String) -> String {
-    fillerPattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "$1")
+    var t = text
+    for (re, template) in fillerPatterns {
+        t = re.stringByReplacingMatches(in: t, range: NSRange(t.startIndex..., in: t), withTemplate: template)
+    }
+    return letters(t) == 0 ? "" : t // 只剩标点：整段都是语气词
+}
+
+/// 分段处多半在一句话中间，整理却把这一段当成完整的话、末尾补了句号（试用时「比如 GitHub。iPhone 17」）。
+/// 原文这一段不是以句末标点结尾的，就照原文的结尾：原文是逗号、顿号就还是它，什么都没有就不加。
+func keepSegmentEnd(_ raw: String, _ tidied: String) -> String {
+    guard let last = tidied.last, last == "。" || last == "." else { return tidied }
+    let rawEnd = raw.trimmingCharacters(in: .whitespacesAndNewlines).last
+    if let rawEnd, "。！？.!?".contains(rawEnd) { return tidied }
+    return String(tidied.dropLast()) + (rawEnd.map { "，,、；;：:".contains($0) ? String($0) : "" } ?? "")
+}
+
+/// 把各段接起来：前一段以英文、数字结尾，后一段又以英文、数字开头时，中间空一格（「GitHub」「iPhone」不能粘成一个词）。
+func joinSegments(_ parts: [String]) -> String {
+    func latin(_ c: Character?) -> Bool { c.map { $0.isASCII && ($0.isLetter || $0.isNumber) } ?? false }
+    var out = ""
+    for p in parts where !p.isEmpty {
+        if latin(out.last), latin(p.first) { out += " " }
+        out += p
+    }
+    return out
+}
+
+/// 去掉汉字和英文、数字之间的空格（英文和英文之间的不动）：转写和整理的模型都爱在这儿加空格，
+/// 加不加该由壳的「自动空格」设置决定（开着的壳会照规矩加回来），不由模型。草稿和上屏的都这样，前后一致。
+let unspacePattern = try! NSRegularExpression(pattern: "(?<=[\\u4e00-\\u9fff])[ \\t]+(?=[A-Za-z0-9])|(?<=[A-Za-z0-9%])[ \\t]+(?=[\\u4e00-\\u9fff])")
+func unspaced(_ text: String) -> String {
+    unspacePattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
 }
 
 /// 只数字母和数字（去掉标点、空格）。
 func letters(_ s: String) -> Int { s.unicodeScalars.filter { CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) }.count }
+
+/// 和前文对上多少个字（只数字母和数字）才算模型在照抄前文。
+let minEcho = 8
+/// 转写模型拿光标前的字和前面几段当上下文；分段以后新的一段音频很少时，它会把上下文照抄出来，接在后面就成了两遍。
+/// 整段都在前文里出现过：不要；开头和前文的结尾对上 minEcho 个字以上：去掉对上的这部分（连同紧跟的标点）。
+func stripEcho(_ text: String, after before: String) -> String {
+    func isWord(_ c: Character) -> Bool { c.unicodeScalars.allSatisfy { CharacterSet.letters.contains($0) || CharacterSet.decimalDigits.contains($0) } }
+    let t = Array(text.filter(isWord)), b = Array(before.filter(isWord))
+    guard t.count >= minEcho, b.count >= minEcho else { return text }
+    if String(b).contains(String(t)) { return "" }
+    var k = min(t.count, b.count)
+    while k >= minEcho, !t[..<k].elementsEqual(b[(b.count - k)...]) { k -= 1 }
+    guard k >= minEcho else { return text }
+    var n = 0, i = text.startIndex
+    while i < text.endIndex, n < k { if isWord(text[i]) { n += 1 }; i = text.index(after: i) }
+    while i < text.endIndex, !isWord(text[i]) { i = text.index(after: i) }
+    return String(text[i...])
+}
 
 /// 整理的结果比原文短一半以上、或长三成以上，就当跑偏了（比如照着原文里的话去做了），用原文。
 func guarded(_ raw: String, _ out: String?) -> String {
@@ -453,8 +544,8 @@ func gotFinal(_ text: String) {
         log("没听到说话（有声音的只有 \(d.loud) 块，最响 \(Int(d.levels.max() ?? -120)) dBFS，底噪 \(Int(f)) dBFS），不上屏")
         // 录到了比底噪明显响的声音、只是太小（不是只有底噪）：光标旁说一句为什么，不要什么都没有、让人再按一次
         if d.levels.filter({ $0 > f + 6 }).count >= minLoudBlocks {
-            var hint = "声音太小，没听清"
-            if let dev = recorder.device, let v = Audio.inputVolume(dev), v < 0.5 { hint += "：系统设置 › 声音 › 输入里的音量偏低" }
+            var hint = "音量过低，未识别到语音"
+            if let dev = recorder.device, let v = Audio.inputVolume(dev), v < 0.5 { hint += "：系统设置 › 声音 › 输入中的输入音量偏低" }
             d.blocked = hint
             current = d
             send(["type": "show", "id": d.id, "text": "", "hint": hint])
@@ -462,18 +553,64 @@ func gotFinal(_ text: String) {
         }
         return finish(nil)
     }
-    let t = digitsFirst(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    var t = digitsFirst(text.trimmingCharacters(in: .whitespacesAndNewlines))
+    // 分段以后的最后一段：刚分段就松开、几乎没说话时，模型会把上下文（前面几段）整段吐出来，接上去就成了两遍。
+    // 这一段没说话就当没有；说了的也去掉开头和前文重复的部分
+    if !d.segs.isEmpty {
+        if d.segLoud < minLoudBlocks {
+            if !t.isEmpty { log("分段后的最后一段没听到说话（有声音的只有 \(d.segLoud) 块），不要它的 \(t.count) 个字") }
+            t = ""
+        } else {
+            t = stripEcho(t, after: d.cursor + d.prefix)
+        }
+    }
     if !t.isEmpty { d.segs.append(Segment(raw: t, tidied: nil, done: false)) }
     d.finalized = true
     current = d
-    let all = d.prefix
-    if !t.isEmpty { tidy(d.segs.count - 1) } // 不整理时它直接算整理完
+    let all = unspaced(d.prefix)
+    if tidyEnabled, tidyPrompt != nil, d.segs.count > 1 {
+        // 分了段的：整篇一起编辑一次（每段单独整理时，列表、分段只在一段里面对，段和段直接接上）。
+        // 最后一段不再单独整理；前面几段说话时已经在后台整理好了，整篇的没等到或出错时用它们，最后一段用去掉语气词的原文
+        if !t.isEmpty { d.segs[d.segs.count - 1].done = true; current = d }
+        editWhole()
+    } else if !t.isEmpty {
+        tidy(d.segs.count - 1) // 不整理时它直接算整理完
+    }
     if tidyEnabled, tidyPrompt != nil, !all.isEmpty {
         send(["type": "show", "id": d.id, "text": all, "hint": "整理中…"]) // 终稿出来了，在整理
         let id = d.id
-        q.asyncAfter(deadline: .now() + tidyWait) { if current?.id == id { tryCommit(force: true) } } // 太慢就不等了
+        q.asyncAfter(deadline: .now() + tidyWait(chars: all.count)) { if current?.id == id { tryCommit(force: true) } } // 太慢就不等了
     }
     tryCommit(force: false)
+}
+
+/// 整理一次的请求：提示词、几轮示例、原文。
+func tidyParams(_ prompt: String, _ raw: String) -> [String: Any] {
+    var msgs: [[String: String]] = [["role": "system", "content": prompt]]
+    for e in tidyExamples where e.count == 2 {
+        msgs.append(["role": "user", "content": "<<<\n" + e[0] + "\n>>>"])
+        msgs.append(["role": "assistant", "content": String(data: try! JSONSerialization.data(withJSONObject: ["text": e[1]]), encoding: .utf8)!])
+    }
+    msgs.append(["role": "user", "content": "<<<\n" + raw + "\n>>>"])
+    return [
+        "task": tidyTask,
+        "messages": msgs,
+        "response_format": ["type": "json_schema", "json_schema": ["name": "tidy", "schema": [
+            "type": "object", "properties": ["text": ["type": "string"]], "required": ["text"], "additionalProperties": false]]],
+    ]
+}
+
+/// 分了段的听写松开以后，请主控把整篇一起编辑一次。
+func editWhole() {
+    guard var d = current, let tidyPrompt else { return }
+    let raw = stripFillers(joinSegments(d.segs.map(\.raw)))
+    guard !raw.isEmpty else { return }
+    d.wholeAsked = true
+    current = d
+    let params = tidyParams(tidyPrompt, raw)
+    askCounter += 1
+    pending[askCounter] = Pending(params: params, dictation: d.id, raw: raw, seg: nil, whole: true)
+    send(["type": "ask", "id": askCounter, "to": "hub", "method": "generate", "params": params])
 }
 
 /// 请主控整理第 i 段（不整理时直接算整理完）。
@@ -491,36 +628,27 @@ func tidy(_ i: Int) {
         current = d
         return
     }
-    var msgs: [[String: String]] = [["role": "system", "content": tidyPrompt]]
-    for e in tidyExamples where e.count == 2 {
-        msgs.append(["role": "user", "content": "<<<\n" + e[0] + "\n>>>"])
-        msgs.append(["role": "assistant", "content": String(data: try! JSONSerialization.data(withJSONObject: ["text": e[1]]), encoding: .utf8)!])
-    }
-    msgs.append(["role": "user", "content": "<<<\n" + raw + "\n>>>"])
-    let params: [String: Any] = [
-        "task": tidyTask,
-        "messages": msgs,
-        "response_format": ["type": "json_schema", "json_schema": ["name": "tidy", "schema": [
-            "type": "object", "properties": ["text": ["type": "string"]], "required": ["text"], "additionalProperties": false]]],
-    ]
+    let params = tidyParams(tidyPrompt, raw)
     askCounter += 1
     pending[askCounter] = Pending(params: params, dictation: d.id, raw: raw, seg: i)
     send(["type": "ask", "id": askCounter, "to": "hub", "method": "generate", "params": params])
 }
 
-/// 终稿都回来了：各段都整理完，或者 force（等够了），就上屏——整理完的用整理后的，没整理完、出错的用原文。
+/// 终稿都回来了就上屏：整篇编辑回来了用它；否则各段都整理完（整篇的出错了），或者 force（等够了），
+/// 整理完的段用整理后的，没整理完、出错的用原文。
 func tryCommit(force: Bool) {
-    guard let d = current, d.finalized, force || d.segs.allSatisfy(\.done) else { return }
-    finish(d.segs.map { $0.tidied ?? $0.raw }.joined())
+    guard let d = current, d.finalized else { return }
+    if let w = d.whole { return finish(w) }
+    guard force || (!d.wholeAsked && d.segs.allSatisfy(\.done)) else { return }
+    finish(joinSegments(d.segs.map { $0.tidied ?? (tidyEnabled ? stripFillers($0.raw) : $0.raw) })) // 整理太慢没等到：至少去掉语气词
 }
 
 func finish(_ text: String?) {
     guard let d = current else { return }
-    let t = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let t = unspaced(text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     send(t.isEmpty ? ["type": "end", "id": d.id] : ["type": "commit", "id": d.id, "text": t])
     current = nil
-    displayed = ""
-    target = ""
+    resetTyping()
     recorder.stop()
 }
 
@@ -531,12 +659,24 @@ func reply(_ m: [String: Any]) {
         return
     }
     let want = p.params["want"] as? String
+    if let raw = p.raw, p.whole { // 整篇编辑的答复；出错时不用它，用各段的
+        guard var d = current, d.id == p.dictation else { return }
+        let out = ((m["result"] as? [String: Any])?["text"] as? String).flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["text"] as? String
+        if out == nil, let e = m["error"] { log("整篇编辑出错：\(e)") }
+        if let out { d.whole = guarded(raw, out.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        d.wholeAsked = false
+        current = d
+        return tryCommit(force: false)
+    }
     if let raw = p.raw, let i = p.seg { // 整理的答复：{"text": "{\"text\": …}"}，模型按 response_format 出的 JSON 在 text 里
         guard var d = current, d.id == p.dictation, i < d.segs.count else { return }
         let out = ((m["result"] as? [String: Any])?["text"] as? String).flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["text"] as? String
         if out == nil, let e = m["error"] { log("整理出错：\(e)") }
-        d.segs[i].tidied = guarded(raw, out?.trimmingCharacters(in: .whitespacesAndNewlines))
+        let tidied = guarded(raw, out?.trimmingCharacters(in: .whitespacesAndNewlines))
+        // 不是最后一段（还没松开，或者后面还有）：分段处多半在一句话中间，别让整理补的句号把一句话断开
+        d.segs[i].tidied = !d.finalized || i < d.segs.count - 1 ? keepSegmentEnd(raw, tidied) : tidied
         d.segs[i].done = true
         current = d
         return tryCommit(force: false)
@@ -547,14 +687,20 @@ func reply(_ m: [String: Any]) {
             return
         }
         guard var d = current, d.id == p.dictation else { return }
-        let text = stripLeakedHotwords(r["text"] as? String ?? "")
+        var text = stripLeakedHotwords(r["text"] as? String ?? "")
         if p.roll { return rolled(text) }
         guard p.params["session"] as? String == d.session else { return } // 分段以前那一段的草稿：不要了
         if want == "draft" {
+            if !d.segs.isEmpty { text = stripEcho(text, after: d.cursor + d.prefix) } // 分段以后：模型吐出来的前文不要
             d.draftInFlight = false
             if !text.isEmpty { d.lastDraft = text }
             current = d
-            if !d.stopped, !text.isEmpty, d.loud >= minLoudBlocks { target = d.prefix + text } // 还没听到说话：模型可能把上下文吐出来，不显示
+            if !d.stopped, !text.isEmpty, d.segLoud >= minLoudBlocks { // 这一段还没听到说话：模型可能把上下文吐出来，不显示
+                let now = Date()
+                if let t = lastTargetAt { draftGap = 0.7 * draftGap + 0.3 * min(3, now.timeIntervalSince(t)) }
+                lastTargetAt = now
+                target = unspaced(joinSegments([d.prefix, text]))
+            }
         } else if want == "final" {
             gotFinal(text)
         }
@@ -589,7 +735,7 @@ func reply(_ m: [String: Any]) {
             send(["type": "ask", "id": askCounter, "to": "hub", "method": "transcribe", "params": p.params])
         }
     default:
-        // 螺壳做不了转写、这次又还没识别出字：提示为什么，不要只亮着「正在听」最后什么都没有
+        // 螺壳做不了转写、这次又还没识别出字：提示为什么，不要只亮着「录音中」最后什么都没有
         if let hint = blockedHint(code), d.prefix.isEmpty, d.lastDraft.isEmpty {
             log("转写用不了：\(code) \(e["message"] as? String ?? "")")
             if d.blocked == nil {
@@ -636,8 +782,7 @@ func handle(_ m: [String: Any]) {
         }
         if current != nil { recorder.stop() }
         current = Dictation(id: id ?? 0)
-        displayed = ""
-        target = ""
+        resetTyping()
         recorder.start()
         warmup()
         refreshHotwords()
@@ -649,7 +794,7 @@ func handle(_ m: [String: Any]) {
         current?.started = true
         current?.cursor = m["context"] as? String ?? ""
         transcribe("none")
-        if let d = current, !d.ready { send(["type": "show", "id": d.id, "text": "", "listening": false]) } // 还没收到声音：先显示准备中
+        if let d = current, !d.ready { show(d, "", listening: false) } // 还没收到声音：先显示准备中
     case "stop":
         guard var d = current, d.id == id else { return }
         d.stopped = true
@@ -663,8 +808,7 @@ func handle(_ m: [String: Any]) {
         guard let d = current, d.id == id else { return }
         if d.started { ask("transcribe", ["task": task, "session": d.session, "seq": d.seq, "want": "cancel"], dictation: nil) }
         current = nil
-        displayed = ""
-        target = ""
+        resetTyping()
         recorder.stop()
     case "reply":
         reply(m)
@@ -697,6 +841,10 @@ func noiseFloor(_ levels: [Float]) -> Float {
 /// 当成没说话。转写模型本身不挑音量：合成的句子压低 40 dB（最响的块约 -55 dBFS）照样一字不差。
 func isLoud(_ l: Float, floor: Float) -> Bool { l > -40 || (l > -65 && l > floor + 10) }
 
+/// 光标旁音量条的高低（0–1）：比底噪高 6 dB 起、再高 30 dB 到顶。底噪最多按 -45 dBFS 算（刚按下几块时底噪还不准，
+/// 吵的地方也别让条一直趴着）。说得太小、门槛不算说话的，条也几乎不动，按着就看得出来。
+func meter(_ l: Float, floor: Float) -> Double { Double(min(1, max(0, (l - (min(floor, -45) + 6)) / 30))) }
+
 recorder.onAudio = { data in
     guard var d = current else { return }
     d.pcm.append(data)
@@ -704,13 +852,15 @@ recorder.onAudio = { data in
     // 话筒真的开始收音了（不再全是零：蓝牙耳机切到通话模式、合着盖换麦克风都要一会儿）：告诉壳，黄点变红点
     if !d.ready, data.contains(where: { $0 != 0 }) {
         d.ready = true
-        if d.started, !d.stopped { send(["type": "show", "id": d.id, "text": displayed, "listening": true]) }
+        if d.started, !d.stopped { show(d, displayed, listening: true) }
     }
     current = d
+    // 按住、话筒在收音时，每块报一次音量，壳画成跟着声音动的音量条
+    if d.started, !d.stopped, d.ready { send(["type": "level", "id": d.id, "level": meter(level(data) ?? -120, floor: noiseFloor(d.levels))]) }
     // 说到 segmentSecs 以后挑一个停顿的地方切（不在一句话中间切开）：先要这一段的终稿、在后台整理，接着开新的一段；
     // 一直没停顿的话到 maxSegmentSecs 硬切（主控一次最长 120 秒）
     let secs = Double(d.pcm.count - d.segStart) / 32000
-    if d.started, !d.stopped, !d.rolling, d.blocked == nil, secs >= maxSegmentSecs || (secs >= segmentSecs && !isLoud(level(data) ?? -120, floor: noiseFloor(d.levels))) { transcribe("final", roll: true) }
+    if d.started, !d.stopped, !d.rolling, d.blocked == nil, secs >= maxSegmentSecs || (secs >= segmentSecs && isPause(level(data) ?? -120, floor: noiseFloor(d.levels), secs: secs)) { transcribe("final", roll: true) }
 }
 
 // 草稿：按住期间每隔 draftInterval 一份，上一份没回来就等它
@@ -724,23 +874,28 @@ draftTimer.setEventHandler {
 }
 draftTimer.resume()
 
-// 逐字补出：每 40 ms 往 target 走几个字，大约在下一份草稿来之前补完。草稿是整段重解的，前面的字可能变：
-// 变了的就地换掉，不删了重打（长段落一大片删了又出会闪，输入框也一会儿高一会儿矮），只有新多出来的字逐字补
+// 逐字补出：每 40 ms 看一次，按「草稿实际隔多久来一份」匀速补，不是一下补完再干等下一份（原来每 40 ms 补一个字，
+// 新草稿多出的三五个字 0.2 秒就补完了，然后停着等，看着一卡一卡）。还没补的字越多补得越快，大约在下一份草稿来时补到；
+// 字不会一下全到，比草稿晚一点出来，换来字是一个个均匀出来的。
+// 草稿是整段重解的，前面的字可能变：变了的就地换掉，不删了重打（长段落一大片删了又出会闪，输入框也一会儿高一会儿矮）
 let typeTimer = DispatchSource.makeTimerSource(queue: q)
 typeTimer.schedule(deadline: .now() + 0.04, repeating: 0.04)
 typeTimer.setEventHandler {
     guard let d = current, !d.stopped, displayed != target else { return }
     if target.count <= displayed.count { // 新草稿不比显示的长：直接换
         displayed = target
-        return send(["type": "show", "id": d.id, "text": displayed])
+        typeBudget = 0
+        return show(d, displayed)
     }
     let common = displayed.count // 显示的这些字照新草稿就地换掉
-    var next = String(target.prefix(common))
     let left = target.count - common
-    let step = max(1, Int((Double(left) / (draftInterval * 0.8 / 0.04)).rounded(.up)))
-    next += target.dropFirst(common).prefix(step)
+    typeBudget += Double(left) * 0.04 / min(0.3, max(0.15, draftGap * 0.6)) // 最多拖 0.3 秒：草稿来得慢时宁可一下多出几个字，不能越拖越落后
+    let step = min(left, Int(typeBudget))
+    typeBudget -= Double(step)
+    let next = String(target.prefix(common + step))
+    guard next != displayed else { return }
     displayed = next
-    send(["type": "show", "id": d.id, "text": displayed])
+    show(d, displayed)
 }
 typeTimer.resume()
 

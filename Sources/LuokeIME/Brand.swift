@@ -1,22 +1,25 @@
 import AppKit
 import SwiftUI
 
-/// 螺壳界面规范 v1 的颜色 token（luoke-brand ui/DESIGN.md 第 2、11 节；luokelabs/luoke-ime#14）。
-/// 浅色用暖色、深色用中性灰；代码里不写死色值，都从这里取。
+/// 螺壳应用界面规范 v2 的颜色 token（第 2、11 节，工作台那组）。
+/// 浅色、深色都用暖色：浅色墨棕的字、奶白的底，深色深棕的底、奶油色的字。代码里不写死色值，都从这里取。
 extension Color {
-    static let lkBackground = Color(light: 0xFCFAF7, dark: 0x111111)
-    static let lkCard = Color(light: 0xFFFFFF, dark: 0x1A1A1A)
-    static let lkForeground = Color(light: 0x2B1A12, dark: 0xFAFAF9)
-    static let lkMuted = Color(light: 0x7A6558, dark: 0xB8B8B6)
-    static let lkMutedBackground = Color(light: 0xF4EEE6, dark: 0x232323)
-    static let lkBorder = Color(light: 0xECE4DA, dark: 0x2A2A2A)
-    static let lkPrimary = Color(light: 0x3A1F14, dark: 0xF5F5F4)
-    static let lkPrimaryForeground = Color(light: 0xFDF8F1, dark: 0x141414)
+    static let lkBackground = Color(light: 0xFCFAF7, dark: 0x1F1511)
+    static let lkCard = Color(light: 0xFFFFFF, dark: 0x2C1F19)
+    static let lkForeground = Color(light: 0x2B1A12, dark: 0xFBF3E8)
+    static let lkMuted = Color(light: 0x7A6558, dark: 0xBBA596)
+    static let lkMutedBackground = Color(light: 0xF4EEE6, dark: 0x372720)
+    static let lkBorder = Color(light: 0xECE4DA, dark: 0x3B2A22)
+    static let lkPrimary = Color(light: 0x3A1F14, dark: 0xFDF4E4)
+    static let lkPrimaryForeground = Color(light: 0xFDF8F1, dark: 0x2B1A12)
     static let lkBrand = Color(light: 0xE8556B, dark: 0xF2707F)
     static let lkSuccess = Color(light: 0x2F7A4F, dark: 0x5CC98A)
     static let lkSuccessSoft = Color(light: 0xE4F2E8, dark: 0x16301F)
     static let lkWarning = Color(light: 0xA86A12, dark: 0xE8B45A)
     static let lkWarningSoft = Color(light: 0xFBF0D9, dark: 0x33280F)
+    static let lkDanger = Color(light: 0xC2412D, dark: 0xF07A66)
+    /// 标记（Badge）上的字：浅色下 -soft 底上的 12px 字要压深一档才过 4.5:1，深色照用原色（第 2 节）。成功照用 lkSuccess。
+    static let lkWarningText = Color(light: 0x8F590C, dark: 0xE8B45A)
 
     /// 按窗口的外观（浅色、深色）取两个值。
     init(light: UInt32, dark: UInt32) {

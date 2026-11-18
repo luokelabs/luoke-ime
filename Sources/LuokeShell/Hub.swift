@@ -35,18 +35,17 @@ public final class HubClient {
         case broken(String)
     }
 
-    /// 发一个请求，同步等答复（在调用方自己的线程上；壳在后台队列上调）。
-    public func request(_ method: String, _ path: String, body: JSONValue? = nil, timeout: TimeInterval = 5,
-                        headers: [String: String] = [:]) -> Result<Response, Failure> {
-        let payload = body.map { (try? JSONSerialization.data(withJSONObject: $0.any)) ?? Data() } ?? Data()
-        var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nX-Luoke-Accessory: \(accessory)\r\nConnection: close\r\n"
-        for (k, v) in headers.sorted(by: { $0.key < $1.key }) { head += "\(k): \(v)\r\n" }
-        if body != nil { head += "Content-Type: application/json\r\n" }
-        head += "Content-Length: \(payload.count)\r\n\r\n"
+    /// 主控的 socket 现在能不能连上：只连一下就关，不发请求（本机的 Unix socket，连不上立刻就知道）。菜单里据此提示。
+    public var reachable: Bool {
+        guard case let .success(fd) = connectSocket(timeout: 0.2) else { return false }
+        close(fd)
+        return true
+    }
 
+    /// 连上主控的 socket，交回文件描述符（调用方负责关）。
+    private func connectSocket(timeout: TimeInterval) -> Result<Int32, Failure> {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
         guard fd >= 0 else { return .failure(.unreachable("socket: \(String(cString: strerror(errno)))")) }
-        defer { close(fd) }
         var on: Int32 = 1
         setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
         var tv = timeval(tv_sec: Int(timeout), tv_usec: Int32((timeout - floor(timeout)) * 1_000_000))
@@ -56,7 +55,7 @@ public final class HubClient {
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
         let pathBytes = Array(socketPath.utf8)
-        guard pathBytes.count < MemoryLayout.size(ofValue: addr.sun_path) else { return .failure(.unreachable("socket 路径太长")) }
+        guard pathBytes.count < MemoryLayout.size(ofValue: addr.sun_path) else { close(fd); return .failure(.unreachable("socket 路径太长")) }
         withUnsafeMutableBytes(of: &addr.sun_path) { raw in
             raw.copyBytes(from: pathBytes)
             raw[pathBytes.count] = 0
@@ -64,7 +63,29 @@ public final class HubClient {
         let connected = withUnsafePointer(to: &addr) {
             $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard connected == 0 else { return .failure(.unreachable("连不上主控（\(String(cString: strerror(errno)))）")) }
+        guard connected == 0 else {
+            let why = String(cString: strerror(errno))
+            close(fd)
+            return .failure(.unreachable("连不上主控（\(why)）"))
+        }
+        return .success(fd)
+    }
+
+    /// 发一个请求，同步等答复（在调用方自己的线程上；壳在后台队列上调）。
+    public func request(_ method: String, _ path: String, body: JSONValue? = nil, timeout: TimeInterval = 5,
+                        headers: [String: String] = [:]) -> Result<Response, Failure> {
+        let payload = body.map { (try? JSONSerialization.data(withJSONObject: $0.any)) ?? Data() } ?? Data()
+        var head = "\(method) \(path) HTTP/1.1\r\nHost: localhost\r\nX-Luoke-Accessory: \(accessory)\r\nConnection: close\r\n"
+        for (k, v) in headers.sorted(by: { $0.key < $1.key }) { head += "\(k): \(v)\r\n" }
+        if body != nil { head += "Content-Type: application/json\r\n" }
+        head += "Content-Length: \(payload.count)\r\n\r\n"
+
+        let fd: Int32
+        switch connectSocket(timeout: timeout) {
+        case let .success(f): fd = f
+        case let .failure(f): return .failure(f)
+        }
+        defer { close(fd) }
 
         let out = Data(head.utf8) + payload
         let sent = out.withUnsafeBytes { raw -> Bool in
@@ -76,10 +97,14 @@ public final class HubClient {
             }
             return true
         }
-        guard sent else { return .failure(.broken("写请求失败")) }
-
         var data = Data()
         var buf = [UInt8](repeating: 0, count: 16384)
+        guard sent else {
+            // 主控可能没读完正文就答了、关了连接（比如核版本不过时先答 403）：答复已经在了就照它算，不当成连不上
+            while case let n = read(fd, &buf, buf.count), n > 0 { data.append(contentsOf: buf[0..<n]) }
+            if case .success(let r) = Self.parse(data) { return .success(r) }
+            return .failure(.broken("写请求失败"))
+        }
         while true {
             let n = read(fd, &buf, buf.count)
             if n > 0 { data.append(contentsOf: buf[0..<n]); continue }

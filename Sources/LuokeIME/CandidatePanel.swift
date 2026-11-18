@@ -76,7 +76,8 @@ final class CandidatePanel {
         guard !v.candidates.isEmpty || v.notice != nil || marked != nil else { hide(); return }
         content.model = .init(candidates: v.candidates, highlighted: v.highlighted, page: v.page, pageCount: v.pageCount,
                               notice: v.notice, marked: marked, fontSize: CGFloat(fontSize) * (v.predictHint ? 0.9 : 1),
-                              vertical: orientation == .vertical, pending: v.pending, dimmed: v.predictHint, voice: v.voice)
+                              vertical: orientation == .vertical, pending: v.pending, dimmed: v.predictHint, voice: v.voice,
+                              level: v.voiceLevel)
         if v.topReplaced, window.isVisible { content.fadeInTop() }
         let size = content.fittingSize
         content.frame = NSRect(origin: .zero, size: size)
@@ -127,7 +128,8 @@ final class CandidatePanel {
     }
 
     /// 离屏把候选窗画成 PNG，用于检查外观。
-    static func snapshot(to url: URL, dark: Bool, pending: Bool = false, predict: Bool = false, voice: SessionView.Voice? = nil) -> Bool {
+    static func snapshot(to url: URL, dark: Bool, pending: Bool = false, predict: Bool = false, voice: SessionView.Voice? = nil,
+                         level: Double? = nil) -> Bool {
         let view = CandidateView()
         view.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
         view.model = .init(candidates: [Candidate(text: "我不知道", consume: 6), Candidate(text: "我", consume: 2),
@@ -141,7 +143,8 @@ final class CandidatePanel {
                                pending: false, dimmed: true)
         }
         if let voice { // 语音：只有提示行（字在输入框里）
-            view.model = .init(notice: voice == .preparing ? "准备中…" : voice == .listening ? "正在听" : "整理中…", fontSize: 16, voice: voice)
+            view.model = .init(notice: voice == .preparing ? "准备中…" : voice == .listening ? "录音中" : "整理中…", fontSize: 16, voice: voice,
+                               level: level)
         }
         let size = view.fittingSize
         let bg = NSView(frame: NSRect(origin: .zero, size: NSSize(width: size.width + 40, height: size.height + 40)))
@@ -166,11 +169,14 @@ final class CandidatePanel {
                 .foregroundColor: NSColor.secondaryLabelColor.withAlphaComponent(0.55)]).draw(at: NSPoint(x: f.minX, y: f.minY))
             NSGraphicsContext.current = nil
         }
-        if voice != nil, let ctx = NSGraphicsContext(bitmapImageRep: rep) { // 语音的点也是独立图层，补画上去
+        if voice != nil, let ctx = NSGraphicsContext(bitmapImageRep: rep) { // 语音的点、音量条也是独立图层，补画上去
             NSGraphicsContext.current = ctx
-            let f = view.convert(view.voiceDot.frame, to: bg)
             (voice == .preparing ? NSColor.systemYellow : voice == .listening ? NSColor.systemRed : NSColor.secondaryLabelColor).setFill()
-            NSBezierPath(ovalIn: NSRect(x: f.minX, y: bg.bounds.height - f.maxY, width: f.width, height: f.height)).fill()
+            for l in [view.voiceDot] + view.voiceBars where !l.isHidden {
+                let f = view.convert(l.frame, to: bg)
+                let r = NSRect(x: f.minX, y: bg.bounds.height - f.maxY, width: f.width, height: f.height)
+                NSBezierPath(roundedRect: r, xRadius: l.cornerRadius, yRadius: l.cornerRadius).fill()
+            }
             NSGraphicsContext.current = nil
         }
         guard let png = rep.representation(using: .png, properties: [:]) else { return false }
@@ -194,13 +200,16 @@ final class CandidateView: NSView {
         var dimmed = false
         /// 语音的状态：提示行前面画一个会动的点（在听是红的、一跳一跳；在识别、整理是灰的、慢慢呼吸），提示字也大一点、深一点
         var voice: SessionView.Voice?
+        /// 在听时引擎报的音量（0–1）：有就把红点换成三根跟着声音动的音量条，说得太小声一眼看得出来
+        var level: Double?
     }
 
     static let padding: CGFloat = 6
     var model = Model() {
         didSet {
             if model.pending != oldValue.pending { updateDot() }
-            if model.voice != oldValue.voice { updateVoiceDot() }
+            if model.voice != oldValue.voice || (model.level == nil) != (oldValue.level == nil) { updateVoiceDot() }
+            if model.level != oldValue.level { layoutBars(animated: true) }
         }
     }
 
@@ -221,10 +230,35 @@ final class CandidateView: NSView {
     /// 提示行前面给点留的宽度（不是语音时为 0）。
     private var voiceSlot: CGFloat { model.voice == nil ? 0 : voiceDotSize + 7 }
 
+    /// 音量条：三根竖条，中间那根最高，跟着引擎报的音量（0.1 秒一次）伸缩。
+    fileprivate let voiceBars = (0..<3).map { _ in CALayer() }
+    private var showsBars: Bool { model.voice == .listening && model.level != nil }
+
+    private func layoutBars(animated: Bool) {
+        guard showsBars else { return }
+        let d = voiceDotSize, level = model.level ?? 0
+        let w = max(2, round(d * 0.24)), gap = max(1.5, round(w * 0.6))
+        let maxH = round(d * 1.6), minH = w
+        let x0 = voiceDot.frame.midX - (3 * w + 2 * gap) / 2
+        CATransaction.begin()
+        if animated { CATransaction.setAnimationDuration(0.09) } else { CATransaction.setDisableActions(true) }
+        for (i, bar) in voiceBars.enumerated() {
+            let h = round(minH + (maxH - minH) * min(1, level * (i == 1 ? 1 : 0.65)))
+            bar.frame = NSRect(x: x0 + CGFloat(i) * (w + gap), y: voiceDot.frame.midY - h / 2, width: w, height: h)
+            bar.cornerRadius = w / 2
+        }
+        CATransaction.commit()
+    }
+
     private func updateVoiceDot() {
         voiceDot.removeAllAnimations()
-        voiceDot.isHidden = model.voice == nil
-        guard let v = model.voice else { return }
+        voiceDot.isHidden = model.voice == nil || showsBars
+        for bar in voiceBars {
+            bar.isHidden = !showsBars
+            bar.backgroundColor = NSColor.systemRed.cgColor
+        }
+        if showsBars { layoutBars(animated: false) }
+        guard let v = model.voice, !showsBars else { return }
         let pulse = CABasicAnimation(keyPath: "opacity")
         let scale = CABasicAnimation(keyPath: "transform.scale")
         switch v {
@@ -261,6 +295,10 @@ final class CandidateView: NSView {
         layer?.addSublayer(mark)
         voiceDot.isHidden = true
         layer?.addSublayer(voiceDot)
+        for bar in voiceBars {
+            bar.isHidden = true
+            layer?.addSublayer(bar)
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -431,5 +469,6 @@ final class CandidateView: NSView {
         voiceDot.frame = NSRect(x: p + 4, y: p + (rowHeight - d) / 2, width: d, height: d)
         voiceDot.cornerRadius = d / 2
         CATransaction.commit()
+        layoutBars(animated: false)
     }
 }

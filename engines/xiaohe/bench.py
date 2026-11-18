@@ -17,7 +17,7 @@
 模型打分在个人化组件里：bench 像壳一样起一个（--personal，默认 ../personal），把引擎的转问转给它、答复转回来；
 不给它记忆的路径，测的时候什么都不写进记忆。
 --scorer hub|auto 让个人化组件经主控（luoke-core）打分：bench 也像壳一样把它 to: hub 的转问转给主控（--hub 是主控的 socket，
-必须写明，不退回默认的位置），最后报主控那边的用时和前缀缓存命中率。
+必须写明，不退回默认的位置），最后报主控那边的用时和前缀缓存命中率。主控只认登记过的配件版本，用 --accessory luoke-ime/<版本> 报（默认 luoke-ime/bench）。
 """
 import argparse
 import csv
@@ -91,6 +91,7 @@ def main():
     ap.add_argument("--score-delay", type=float, default=0, metavar="MS",
                     help="每次打分的答复晚这么多毫秒再交给引擎：在快的机器上模拟慢的（比如 16 GB 测试机（M1）上螺壳每次打分约 66 ms）")
     ap.add_argument("--hub", metavar="SOCKET", help="主控的 socket（--scorer hub / auto 时必填，不退回默认的位置）")
+    ap.add_argument("--accessory", default="luoke-ime/bench", help="经主控时报的配件版本（X-Luoke-Accessory）：主控只认登记过的")
     args = ap.parse_args()
     if args.scorer in ("hub", "auto") and not args.hub:
         ap.error("--scorer hub / auto 要用 --hub 写明连哪个主控（不碰日常在用的实例）")
@@ -149,7 +150,7 @@ def main():
     def hub_call(method, path, body=None):
         c = Unix("localhost")
         c.request(method, path, body=json.dumps(body).encode() if body is not None else None,
-                  headers={"X-Luoke-Accessory": "luoke-ime/bench", "Content-Type": "application/json"})
+                  headers={"X-Luoke-Accessory": args.accessory,"Content-Type": "application/json"})
         resp = c.getresponse()
         data = json.loads(resp.read() or b"{}")
         c.close()

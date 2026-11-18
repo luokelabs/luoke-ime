@@ -182,7 +182,9 @@ final class LuokeInputController: IMKInputController, SessionClient {
         let inline = manager.config.inline(for: appID)
         // 联想打开时，高亮的那个总放在光标处，拼音显示在候选窗里的模式也一样：光标处没有显示串时，Chromium 会把输入法接下的
         // Tab、方向键再交给网页，Tab 就把焦点移走了（测试机上 Chrome 实测）。拼音本身照旧只显示在候选窗里
-        let marked = inline || view.predicting ? view.marked : ""
+        // 拼音显示在候选窗里时，组字期间光标处放一个零宽空格当显示串：道理同上，没有显示串时 Chromium、Electron 会把输入法
+        // 接下的退格、方向键再交给网页，删拼音的同时删掉已经上屏的字。零宽，看上去和光标处没有东西一样；上屏、Esc 时照常被换掉
+        let marked = inline || view.predicting ? view.marked : (view.marked.isEmpty ? "" : "\u{200B}")
         if marked != lastMarked, let c = textClient {
             let attrs: [NSAttributedString.Key: Any] = [.underlineStyle: NSUnderlineStyle.single.rawValue, .markedClauseSegment: 0]
             c.setMarkedText(NSAttributedString(string: marked, attributes: attrs),
@@ -220,22 +222,28 @@ final class LuokeInputController: IMKInputController, SessionClient {
         let menu = NSMenu(title: "螺壳")
         let config = manager.config
 
+        // ---- 螺壳没连上：打字照常，只是少了模型做的那几样；不提示的话只觉得「重排没了」，不知道原因
+        if !manager.hubReachable {
+            menu.addItem(disabled("未连接螺壳：AI 重排\(config.voiceOn ? "、联想和语音输入" : "和联想")不可用"))
+            menu.addItem(.separator())
+        }
+
         // ---- 输入方案
         let current = manager.typing?.id
         let engines = manager.typingEntries
         menu.addItem(disabled("输入方案"))
         if engines.isEmpty {
-            menu.addItem(disabled("还没有引擎：把引擎文件夹放进 ~/.luoke/ime/engines"))
+            menu.addItem(disabled("无可用引擎：请将引擎文件夹放入 ~/.luoke/ime/engines"))
         }
         for e in engines {
             let name = e.manifest?.name ?? e.id
             if let why = manager.refusal(e) {
-                let item = detail("「\(name)」（第三方）不能用", why)
+                let item = detail("「\(name)」（第三方）不可用", why)
                 item.indentationLevel = 1
                 menu.addItem(item)
                 continue
             }
-            let suffix = e.bundled ? "" : manager.approved(e) ? "（第三方）" : "（第三方，确认后才能用）"
+            let suffix = e.bundled ? "" : manager.approved(e) ? "（第三方）" : "（第三方，需确认）"
             let item = NSMenuItem(title: name + suffix, action: #selector(selectEngine(_:)), keyEquivalent: "")
             item.target = self
             item.representedObject = e.id
@@ -245,7 +253,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
         }
         // 等确认的第三方引擎里，不在上面那串里的：和自带的同名的、快捷键引擎、个人化组件
         for e in manager.pending where !engines.contains(where: { $0.id == e.id && !$0.bundled }) {
-            let item = action("启用第三方的「\(e.manifest?.name ?? e.id)」", #selector(confirmPending(_:)))
+            let item = action("启用第三方引擎「\(e.manifest?.name ?? e.id)」", #selector(confirmPending(_:)))
             item.representedObject = e.id
             item.indentationLevel = 1
             menu.addItem(item)
@@ -271,13 +279,13 @@ final class LuokeInputController: IMKInputController, SessionClient {
                           #selector(toggleCurrentMode(_:)))
         menu.addItem(mode)
         if let t = manager.typing, t.manifest.forgetAll {
-            let clear = t.state == .running ? action("清掉「\(t.manifest.name)」学到的词", #selector(forgetLearned(_:)))
-                : disabled("清掉「\(t.manifest.name)」学到的词（引擎没在运行）")
+            let clear = t.state == .running ? action("清除「\(t.manifest.name)」的已学词语", #selector(forgetLearned(_:)))
+                : disabled("清除「\(t.manifest.name)」的已学词语（引擎未运行）")
             clear.representedObject = t.id
             menu.addItem(clear)
         }
         if let error = manager.migrationError {
-            menu.addItem(detail("设置文件没能换成新格式，改了的设置不会存（原文件没动）", error))
+            menu.addItem(detail("设置文件升级失败，修改的设置不会保存（原文件未改动）", error))
         }
 
         // ---- 当前应用
@@ -335,7 +343,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
             // 整份记忆在螺壳记忆（luoke-mem 配件）自己的界面里看和管（顶层 ADR 0002、0003）：这里只负责打开它
             if FileManager.default.fileExists(atPath: manager.paths.memory.path) {
                 let manage = Self.memoryAvailable
-                    ? action("管理记忆", #selector(openMemory(_:))) : disabled("管理记忆（需要先装螺壳）")
+                    ? action("管理记忆", #selector(openMemory(_:))) : disabled("管理记忆（需安装螺壳）")
                 manage.indentationLevel = 1
                 menu.addItem(manage)
             }
@@ -349,7 +357,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
             dev.state = config.devMode.contains(t.id) ? .on : .off
             dev.representedObject = t.id
             tools.addItem(dev)
-            tools.addItem(disabled("开着时把按键和引擎的收发记在本机，只留 7 天；和记忆记录是两回事"))
+            tools.addItem(disabled("开启时在本机记录按键和引擎收发，保留 7 天；与记忆记录无关"))
             tools.addItem(.separator())
         }
         tools.addItem(action("打开引擎文件夹", #selector(openEngines(_:))))
@@ -365,7 +373,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
         for c in [manager.typing, manager.personal].compactMap({ $0 }) + manager.hotkeys {
             guard let ds = manager.denials[c.id], !ds.isEmpty else { continue }
             let sub = NSMenu()
-            sub.addItem(disabled("点一项复制详情"))
+            sub.addItem(disabled("点按条目复制详情"))
             for d in ds {
                 let item = action(d.summary, #selector(copyDetail(_:)))
                 item.toolTip = d.suggestion
@@ -379,7 +387,7 @@ final class LuokeInputController: IMKInputController, SessionClient {
             let clear = action("清除", #selector(clearDenials(_:)))
             clear.representedObject = c.id
             sub.addItem(clear)
-            let item = NSMenuItem(title: "「\(c.manifest.name)」被沙盒拦下 \(ds.count) 项操作", action: nil, keyEquivalent: "")
+            let item = NSMenuItem(title: "「\(c.manifest.name)」的 \(ds.count) 项操作被沙盒拦截", action: nil, keyEquivalent: "")
             item.submenu = sub
             menu.addItem(item)
         }
@@ -390,8 +398,8 @@ final class LuokeInputController: IMKInputController, SessionClient {
         switch state {
         case .unavailable:
             switch status {
-            case "too_new": return "不可用（记忆比个人化组件带的版本新，要更新输入法）"
-            case "broken": return "不可用（记忆打不开）"
+            case "too_new": return "不可用（记忆版本高于个人化组件，需更新输入法）"
+            case "broken": return "不可用（记忆无法打开）"
             default: return "不可用"
             }
         case .notConsented: return "已关闭"

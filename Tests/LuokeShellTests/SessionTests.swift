@@ -810,18 +810,18 @@ import Testing
         #expect(!r.session.isInHotkeySession)
     }
 
-    @Test func 用麦克风的按住时一直提示正在听_松开后显示识别中() {
+    @Test func 用麦克风的按住时一直提示正在听_松开后显示整理中() {
         let (r, ch) = Self.rig(mode: .hold, arm: true, microphone: true)
         r.press(.modifierDown(.rightCommand))
         r.elapse(0.2)
-        #expect(r.client.view.notice == "正在听")
+        #expect(r.client.view.notice == "录音中")
         #expect(r.client.view.voice == .listening)
         guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
         ch.push(.show(id: id, text: "今天"))
         r.elapse(0.01)
-        #expect(r.client.view.notice == "正在听") // 出了草稿也一直提示
+        #expect(r.client.view.notice == "录音中") // 出了草稿也一直提示
         r.press(.modifierUp(.rightCommand))
-        #expect(r.client.view.notice == "识别中…")
+        #expect(r.client.view.notice == "整理中…")
         #expect(r.client.view.voice == .working)
         ch.push(.commit(id: id, text: "今天开会。"), after: 0.3)
         r.elapse(0.5)
@@ -853,10 +853,10 @@ import Testing
         r.elapse(0.2)
         guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
         r.press(.modifierUp(.rightCommand))
-        #expect(r.client.view.notice == "识别中…")
-        ch.push(.show(id: id, text: "我们周四见面", hint: "整理中…"))
-        r.elapse(0.01)
         #expect(r.client.view.notice == "整理中…")
+        ch.push(.show(id: id, text: "我们周四见面", hint: "音量过低，未识别到语音"))
+        r.elapse(0.01)
+        #expect(r.client.view.notice == "音量过低，未识别到语音")
     }
 
     @Test func 话筒还没开始收音时显示准备中_开始收音后变成正在听() {
@@ -870,11 +870,27 @@ import Testing
         #expect(r.client.view.voice == .preparing && r.client.view.notice == "准备中…")
         ch.push(.show(id: id, text: "", listening: true))
         r.elapse(0.01)
-        #expect(r.client.view.voice == .listening && r.client.view.notice == "正在听")
+        #expect(r.client.view.voice == .listening && r.client.view.notice == "录音中")
         ch.push(.show(id: id, text: "", listening: false))
         r.elapse(0.01)
         r.press(.modifierUp(.rightCommand))
-        #expect(r.client.view.voice == .working && r.client.view.notice == "识别中…") // 松开了就不再是准备中
+        #expect(r.client.view.voice == .working && r.client.view.notice == "整理中…") // 松开了就不再是准备中
+    }
+
+    @Test func 在听时画引擎报的音量_松开后不画() {
+        let (r, ch) = Self.rig(mode: .hold, arm: true, microphone: true)
+        r.press(.modifierDown(.rightCommand))
+        r.elapse(0.2)
+        guard case let .start(id, _, _)? = ch.sent.last else { Issue.record("没有发 start"); return }
+        #expect(r.client.view.voiceLevel == nil, "没报过音量：照旧画红点")
+        ch.push(.level(id: id, level: 0.6))
+        r.elapse(0.01)
+        #expect(r.client.view.voice == .listening && r.client.view.voiceLevel == 0.6)
+        ch.push(.level(id: id + 1, level: 0.9)) // 别的会话的：不要
+        r.elapse(0.01)
+        #expect(r.client.view.voiceLevel == 0.6)
+        r.press(.modifierUp(.rightCommand))
+        #expect(r.client.view.voice == .working && r.client.view.voiceLevel == nil)
     }
 
     @Test func 停止后迟迟没有结果按超时结束() {
@@ -993,6 +1009,14 @@ import Testing
     @Test func 字段为null当作没写() throws {
         let m = try EngineMessage.parse(#"{"type":"answer","id":3,"display":null,"more":null,"autocommit":null,"candidates":[{"text":"好","consume":1,"note":null}]}"#)
         #expect(m == .answer(Answer(id: 3, candidates: [Candidate(text: "好", consume: 1)])))
+    }
+
+    @Test func 音量消息_超出范围的夹到0到1_不是数的报错() throws {
+        #expect(try EngineMessage.parse(#"{"type":"level","id":3,"level":0.25}"#) == .level(id: 3, level: 0.25))
+        #expect(try EngineMessage.parse(#"{"type":"level","id":3,"level":7}"#) == .level(id: 3, level: 1))
+        #expect(try EngineMessage.parse(#"{"type":"level","id":3,"level":-1}"#) == .level(id: 3, level: 0))
+        #expect(throws: ProtocolError.self) { try EngineMessage.parse(#"{"type":"level","id":3,"level":true}"#) }
+        #expect(throws: ProtocolError.self) { try EngineMessage.parse(#"{"type":"level","id":3}"#) }
     }
 
     @Test func 不认识的类型() throws {

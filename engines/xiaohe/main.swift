@@ -249,6 +249,11 @@ func answerEnglish(id: Int, input: String) {
     send(["type": "answer", "id": id, "display": input, "candidates": out.map { ["text": $0, "consume": input.count] }])
 }
 
+/// 英文单词要比模型选的整句的对数概率高出多少才放第一位。没有前文时实测：拼不成话的整句差 11～46（compression 对「挫灭热送戳你」46、
+/// number 对「怒敏儿」20、game 对「噶么」11），真有人这么打的词差得少（code 对「错的」9、make 对「马克」6、name 对「那么」2），
+/// 这些照旧给汉字；有中文前文时汉字本来就更像（「我觉得」后面「那么」比 name 高 7）。
+let englishMargin = 10.0
+
 func answerQuery(id: Int, input: String, context: String) {
     if input.first?.isUppercase == true { return answerEnglish(id: id, input: input) }
     let fast: Fast
@@ -264,10 +269,21 @@ func answerQuery(id: Int, input: String, context: String) {
         guard !memory.isForgotten(input, s) else { return false }
         // 整句放第一位，英文单词仍在第二位。模型换掉了先给的首选时，在后面标个 ✦（注释，灰色小字），
         // 让用户知道这一下是模型按前文改的，不是闪了一下
+        // 英文单词：引擎查到的（fast.english），和苹果自己给的拼写一样的词
+        let isEnglish = { (c: [String: Any]) -> Bool in
+            let t = c["text"] as? String ?? ""
+            return fast.english.contains(t) || (!isHan(t) && t.lowercased() == input)
+        }
         let rest = fast.candidates.filter { $0["text"] as? String != s }
-        let english = rest.filter { fast.english.contains($0["text"] as? String ?? "") }
-        let others = rest.filter { !fast.english.contains($0["text"] as? String ?? "") }
+        let english = rest.filter(isEnglish)
+        let others = rest.filter { !isEnglish($0) }
         var top: [String: Any] = ["text": s, "consume": keys.count]
+        // 模型只在汉字之间挑，整串键读得通时它总能拼出一句（compression →「挫灭热送戳你」）。有拼写一样的英文单词时，
+        // 让模型比一比整句和英文单词哪个更像接在前文后面：英文单词明显更像（对数概率高 englishMargin 以上），它放第一位，整句排第二、不标 ✦
+        if let w = english.first?["text"] as? String, let lp = scorer.score(context, [s, w]), lp[1] >= lp[0] + englishMargin {
+            send(["type": "answer", "id": id, "display": fast.display, "candidates": english + [top] + others])
+            return true
+        }
         if fast.candidates.first?["text"] as? String != s { top["note"] = "✦" }
         send(["type": "answer", "id": id, "display": fast.display, "candidates": [top] + english + others])
         stats.refined(input, sentence: s)

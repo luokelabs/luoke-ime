@@ -221,6 +221,8 @@ public enum EngineMessage: Equatable {
     /// hint：光标处的提示（比如语音的「整理中…」），没有时壳按自己的规矩提示。
     /// listening：用麦克风的引擎说话筒还没真的开始收音（蓝牙耳机切模式这类），壳显示「准备中…」；不写时算在听。
     case show(id: Int, text: String, hint: String? = nil, listening: Bool? = nil)
+    /// 声明了麦克风的引擎：这会儿的音量，0（只有底噪）到 1，壳在光标旁画成跟着声音动的音量条。
+    case level(id: Int, level: Double)
     case commit(id: Int, text: String)
     case end(id: Int)
     case ask(Ask)
@@ -232,7 +234,7 @@ public enum EngineMessage: Equatable {
     public var id: Int? {
         switch self {
         case let .answer(a): return a.id
-        case let .show(id, _, _, _), let .commit(id, _), let .end(id): return id
+        case let .show(id, _, _, _), let .level(id, _), let .commit(id, _), let .end(id): return id
         case let .ask(a): return a.id
         case let .reply(r): return r.id
         case .unknown: return nil
@@ -286,6 +288,11 @@ public enum EngineMessage: Equatable {
             if m["hint"] != nil, !(m["hint"] is String) { throw ProtocolError("show 的 hint 必须是字符串") }
             if m["listening"] != nil, !(m["listening"] is Bool) { throw ProtocolError("show 的 listening 必须是 true 或 false") }
             return .show(id: try int("id"), text: try string("text"), hint: m["hint"] as? String, listening: m["listening"] as? Bool)
+        case "level":
+            guard let n = m["level"] as? NSNumber, CFGetTypeID(n) != CFBooleanGetTypeID(), n.doubleValue.isFinite else {
+                throw ProtocolError("level 的 level 必须是数")
+            }
+            return .level(id: try int("id"), level: min(1, max(0, n.doubleValue)))
         case "commit": return .commit(id: try int("id"), text: try string("text"))
         case "end": return .end(id: try int("id"))
         case "ask":

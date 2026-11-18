@@ -194,11 +194,11 @@ import Testing
         try "{ broken".write(to: paths.settings, atomically: true, encoding: .utf8)
         #expect(set(["key": "fuzzyOn", "value": true])["isError"] as? Bool == true)
         #expect(try String(contentsOf: paths.settings, encoding: .utf8) == "{ broken")
-        #expect(texts(page("settings")).contains("设置文件读不懂"))
+        #expect(texts(page("settings")).contains("设置文件无法读取"))
     }
 
     @Test func 各应用页_点列表里的应用展开_窗口重读时还是它() {
-        #expect(texts(page("apps")).contains("还没有单独设置的应用"))
+        #expect(texts(page("apps")).contains("暂无单独设置的应用"))
         var c = ShellConfig()
         c.apps["com.example.notes"] = .init(english: true)
         c.apps["com.example.mail"] = .init(noRecord: true)
@@ -213,7 +213,7 @@ import Testing
         #expect(r["isError"] as? Bool == false)
         let open = page("apps")
         checkWellFormed(open, surface: "apps")
-        #expect(texts(open).contains("默认输入模式") && texts(open).contains("回到列表"))
+        #expect(texts(open).contains("默认输入模式") && texts(open).contains("返回列表"))
         #expect(texts(open).contains("com.example.mail"), "别的应用照样列着")
         // 改了一项，重读还展开着
         _ = set(["page": "apps", "app": "com.example.notes", "key": "apps.com.example.notes.inline", "value": "off"])
@@ -244,7 +244,7 @@ import Testing
         for app in ["com.example.app0", "com.example.app30", "com.example.app99"] {
             _ = request("tools/call", ["name": "ime_page", "arguments": ["page": "apps", "app": app]])
             checkWellFormed(page("apps"), surface: "apps")
-            #expect(texts(page("apps")).contains("回到列表"))
+            #expect(texts(page("apps")).contains("返回列表"))
         }
     }
 

@@ -81,12 +81,12 @@ public struct SettingsService {
     }
 
     static let tools: [[String: Any]] = [
-        ["name": "ime_set", "title": "改输入法的设置",
+        ["name": "ime_set", "title": "修改输入法设置",
          "description": "改一项输入法设置（只在用户点了页上的按钮时调）",
          "inputSchema": ["type": "object", "required": ["key", "value"],
                          "properties": ["page": ["type": "string"], "app": ["type": "string"], "key": ["type": "string"], "value": [:]]],
          "annotations": ["readOnlyHint": false]],
-        ["name": "ime_page", "title": "在「各应用」页看哪个应用",
+        ["name": "ime_page", "title": "选择「各应用」页展开的应用",
          "description": "带 app 展开这个应用的设置，不带回到列表（只记在 window-page.json 里，不改输入法的行为）",
          "inputSchema": ["type": "object", "properties": ["page": ["type": "string"], "app": ["type": "string"]]],
          "annotations": ["readOnlyHint": true]],
@@ -102,22 +102,22 @@ public struct SettingsService {
             let state = load()
             let app = (args["app"] as? String).flatMap { state.config?.apps[$0] != nil ? $0 : nil }
             saveViewedApp(app)
-            return Self.result(rid, ["content": [["type": "text", "text": "好了"]], "isError": false,
+            return Self.result(rid, ["content": [["type": "text", "text": "已修改"]], "isError": false,
                                      "structuredContent": ["card": messages(page, state: state, app: app)]])
         }
         guard Self.validUserAction(meta[Self.userAction]) else {
-            return Self.result(rid, Self.toolError("needs_user_action", "这个设置要你在螺壳里点了才改。"))
+            return Self.result(rid, Self.toolError("needs_user_action", "此设置需由用户在螺壳窗口中修改"))
         }
         var state = load()
-        guard var config = state.config else { return Self.result(rid, Self.toolError("failed", "设置文件读不懂，没有改。可以在输入法菜单的「设置…」里改。")) }
-        guard !config.migratedFromV1 else { return Self.result(rid, Self.toolError("not_ready", "输入法还没把设置换成新版，先用一下输入法再来改。")) }
+        guard var config = state.config else { return Self.result(rid, Self.toolError("failed", "设置文件无法读取，未修改；可在输入法菜单的「设置…」中修改")) }
+        guard !config.migratedFromV1 else { return Self.result(rid, Self.toolError("not_ready", "输入法设置尚未升级为新版本，使用输入法后即可修改")) }
         guard let key = args["key"] as? String, let value = args["value"] else { return Self.result(rid, Self.toolError("invalid", "缺少参数：key、value")) }
         switch apply(key: key, value: value, to: &config, state: state) {
         case .failure(let message):
             return Self.result(rid, Self.toolError("invalid", message))
         case .success(let text):
             do { try config.save(paths.settings) } catch {
-                return Self.result(rid, Self.toolError("failed", "设置没存上，再试一次。"))
+                return Self.result(rid, Self.toolError("failed", "设置保存失败，请重试"))
             }
             state.config = config
             return Self.result(rid, ["content": [["type": "text", "text": text]], "isError": false,
@@ -177,85 +177,85 @@ public struct SettingsService {
     static let switches: [String: (title: String, get: (ShellConfig) -> Bool, set: (inout ShellConfig, Bool) -> Void)] = [
         "fuzzyOn": ("模糊音", { $0.fuzzyOn }, { $0.fuzzyOn = $1 }),
         "voiceOn": ("语音输入", { $0.voiceOn }, { $0.voiceOn = $1 }),
-        "voiceTidy": ("说完后整理", { $0.voiceTidyActive }, { $0.voiceTidy = $1 }),
+        "voiceTidy": ("语音整理", { $0.voiceTidyActive }, { $0.voiceTidy = $1 }),
         "defaultEnglish": ("进入应用时默认英文", { $0.defaultEnglish }, { $0.setDefaultEnglish($1) }),
         "rememberMode": ("记住各应用上次的中英文模式", { $0.rememberMode }, { $0.setRememberMode($1) }),
         "shiftToggles": ("单按 Shift 切换中英文", { $0.settings.shiftToggles }, { $0.settings.shiftToggles = $1 }),
         "autoSpace": ("中英文之间自动加空格", { $0.settings.autoSpace }, { $0.settings.autoSpace = $1 }),
-        "cornerBraces": ("中文状态下 { } 打成「」", { $0.settings.cornerBraces }, { $0.settings.cornerBraces = $1 }),
-        "inline": ("拼音显示在输入框里", { $0.inline }, { $0.inline = $1 }),
+        "cornerBraces": ("中文状态下 { } 输入为「」", { $0.settings.cornerBraces }, { $0.settings.cornerBraces = $1 }),
+        "inline": ("拼音显示在输入框中", { $0.inline }, { $0.inline = $1 }),
         "predict": ("联想", { $0.settings.predict }, { $0.settings.predict = $1 }),
         "recordingPaused": ("暂停所有记录", { $0.recordingPaused }, { $0.recordingPaused = $1 }),
     ]
 
     func apply(key: String, value: Any, to c: inout ShellConfig, state: State) -> Applied {
-        let bad = Applied.failure("这个值不对，没有改。")
+        let bad = Applied.failure("值无效，未修改")
         if let s = Self.switches[key] {
             guard let v = Self.bool(value) else { return bad }
             s.set(&c, v)
-            return .success(v ? "已打开「\(s.title)」。" : "已关掉「\(s.title)」。")
+            return .success(v ? "已开启「\(s.title)」" : "已关闭「\(s.title)」")
         }
         if key.hasPrefix("fuzzyPairs.") {
             let pair = String(key.dropFirst("fuzzyPairs.".count))
             guard ShellConfig.fuzzyChoices.contains(pair), let v = Self.bool(value) else { return bad }
             if v { c.fuzzyPairs.insert(pair) } else { c.fuzzyPairs.remove(pair) }
-            return .success("模糊音 \(Self.pairName(pair))：\(v ? "打开" : "关掉")了。")
+            return .success("模糊音 \(Self.pairName(pair))：\(v ? "已开启" : "已关闭")")
         }
         if key.hasPrefix("apps.") { return applyApp(key: key, value: value, to: &c) }
         switch key {
         case "currentEngine":
             guard let id = value as? String, let e = typingChoices(state, c).first(where: { $0.id == id }) else { return bad }
             c.currentEngine = e.id
-            return .success("输入方案换成了「\(e.name)」。")
+            return .success("输入方案：「\(e.name)」")
         case "voiceKey":
             guard let raw = value as? String, let k = Manifest.Hotkey.Key(rawValue: raw) else { return bad }
             c.voiceKey = k == .rightOption ? nil : k
-            return .success("改成按住\(Self.voiceKeyName(k))说话。")
+            return .success("语音输入按键：\(Self.voiceKeyName(k))")
         case "orientation":
             guard let raw = value as? String, let o = ShellSettings.Orientation(rawValue: raw) else { return bad }
             c.settings.orientation = o
-            return .success(o == .horizontal ? "候选改成横排。" : "候选改成竖排。")
+            return .success(o == .horizontal ? "候选排列：横排" : "候选排列：竖排")
         case "pagingKeys":
             guard let raw = value as? String, let k = ShellSettings.PagingKeys(rawValue: raw) else { return bad }
             c.settings.pagingKeys = k
-            return .success("翻页键改成 \(Self.pagingName(k))。")
+            return .success("翻页键：\(Self.pagingName(k))")
         case "fontSize":
             guard let n = Self.int(value), (10...40).contains(n) else { return bad }
             c.fontSize = Double(n)
-            return .success("字号改成 \(n)。")
+            return .success("字号：\(n)")
         case "pageSize":
             guard let n = Self.int(value), (1...9).contains(n) else { return bad }
             c.settings.pageSize = n
-            return .success("每页改成 \(n) 个候选。")
+            return .success("每页候选数：\(n)")
         case "memory":
             guard let v = Self.bool(value), let p = personal(state, c) else { return bad }
             c.setMemory(key: EngineCatalog.consentKey(p), bundled: p.bundled, on: v)
-            return .success(v ? "已打开记忆记录。" : "已关掉记忆记录，已记下的不删。")
+            return .success(v ? "已开启记忆记录" : "已关闭记忆记录，已有记录保留")
         default:
-            return .failure("不认识的设置，没有改。")
+            return .failure("未知设置，未修改")
         }
     }
 
     /// `apps.<bundle id>.<项>`：只改已经有单独设置的应用（应用是在输入法菜单的「此应用设置」里加的）。
     private func applyApp(key: String, value: Any, to c: inout ShellConfig) -> Applied {
-        let bad = Applied.failure("这个值不对，没有改。")
+        let bad = Applied.failure("值无效，未修改")
         guard let app = Self.appOf(key), c.apps[app] != nil, let item = key.split(separator: ".").last.map(String.init) else {
-            return .failure("这个应用没有单独的设置，没有改。")
+            return .failure("此应用没有单独设置，未修改")
         }
         let name = appName(app)
         if item == "reset" {
             c.setApp(app) { $0 = .init() }
-            return .success("「\(name)」恢复跟随全局。")
+            return .success("「\(name)」已恢复跟随全局")
         }
         if item == "noRecord" {
             guard let v = Self.bool(value) else { return bad }
             c.setApp(app) { $0.noRecord = v }
-            return .success(v ? "「\(name)」里不再记录。" : "「\(name)」的记忆记录跟随全局。")
+            return .success(v ? "「\(name)」：禁止记录" : "「\(name)」：记忆记录跟随全局")
         }
         let paths: [String: WritableKeyPath<ShellConfig.AppSettings, Bool?>] = ["english": \.english, "inline": \.inline, "predict": \.predict]
-        guard let path = paths[item], let raw = value as? String, ["follow", "on", "off"].contains(raw) else { return .failure("不认识的设置，没有改。") }
+        guard let path = paths[item], let raw = value as? String, ["follow", "on", "off"].contains(raw) else { return .failure("未知设置，未修改") }
         c.setApp(app) { $0[keyPath: path] = raw == "follow" ? nil : raw == "on" }
-        return .success("「\(name)」改好了。")
+        return .success("「\(name)」设置已修改")
     }
 
     /// `apps.com.example.app.english` 里的应用：去掉开头的 apps. 和最后一段。
@@ -274,8 +274,8 @@ public struct SettingsService {
             if page == "apps" { appsPage(&b, c, state, selected: app) } else { settingsPage(&b, c, state) }
         } else {
             b.section("broken") { b in
-                b.text("broken-t", "设置文件读不懂", variant: "h4")
-                b.text("broken-c", "~/.luoke/ime/settings.json 可能被改坏了。输入法照旧用原来的设置；在输入法菜单的「设置…」里改一项，会重新写好。", variant: "caption")
+                b.text("broken-t", "设置文件无法读取", variant: "h4")
+                b.text("broken-c", "~/.luoke/ime/settings.json 可能已损坏，输入法继续使用原有设置；在输入法菜单的「设置…」中修改任一项后将重新写入", variant: "caption")
             }
         }
         return b.messages()
@@ -294,61 +294,61 @@ public struct SettingsService {
                     b.toggle("fuzzy-\(pair)", Self.pairName(pair), on: c.fuzzyPairs.contains(pair), key: "fuzzyPairs.\(pair)")
                 }
             }
-            b.text("fuzzy-note", "打开后拼法相近的字也会出现，打对的字偶尔会排到后面。", variant: "caption")
+            b.text("fuzzy-note", "开启后同时给出拼法相近的字，准确的候选可能排序靠后", variant: "caption")
         }
         if hasVoice(s, c) {
             let key = c.voiceKey ?? .rightOption
             b.section("voice", "语音") { b in
-                b.toggle("voice", "语音输入：按住\(Self.voiceKeyName(key))说话，松开上屏", on: c.voiceOn, key: "voiceOn")
+                b.toggle("voice", "语音输入", on: c.voiceOn, key: "voiceOn")
                 if c.voiceOn {
-                    b.choice("voice-key", "按住哪个键说话", [Manifest.Hotkey.Key.rightOption, .rightCommand, .rightControl].map {
+                    b.choice("voice-key", "语音输入按键", [Manifest.Hotkey.Key.rightOption, .rightCommand, .rightControl].map {
                         (Self.voiceKeyName($0), $0.rawValue as Any, $0 == key)
                     }, key: "voiceKey")
-                    b.text("voice-key-note", "按右 Alt 没反应的（外接 Windows 键盘、在系统设置里对调过修饰键），多半是它发出来的成了右 ⌘，选右 ⌘ 试试。", variant: "caption")
-                    b.toggle("voice-tidy", "说完后整理：去掉口头禅、理顺改口", on: c.voiceTidyActive, key: "voiceTidy")
+                    b.text("voice-key-note", "使用外接 Windows 键盘或在系统设置中对调过修饰键时，右 Alt 可能被识别为右 ⌘，此时请选择右 ⌘", variant: "caption")
+                    b.toggle("voice-tidy", "语音整理：去除口头禅、修正改口、整理列表和分段", on: c.voiceTidyActive, key: "voiceTidy")
                 }
                 b.text("voice-note", c.voiceOn && !ShellConfig.voiceTidyDefault
-                       ? "识别和整理都由螺壳在这台 Mac 上做。内存 24 GB 及以下的 Mac 上整理要等好几秒，默认不整理。"
-                       : "识别和整理都由螺壳在这台 Mac 上做。第一次按住说话时，系统会问螺壳输入法要麦克风权限。", variant: "caption")
+                       ? "按住所选按键说话，松开后上屏；识别和整理均由螺壳在本机完成；内存 24 GB 及以下的 Mac 上整理耗时数秒，默认关闭"
+                       : "按住所选按键说话，松开后上屏；识别和整理均由螺壳在本机完成；首次使用时系统将请求麦克风权限", variant: "caption")
             }
         }
         b.section("lang", "中英文") { b in
-            b.choice("default-lang", "进入应用时默认", [("中文", false as Any, !c.defaultEnglish), ("英文", true as Any, c.defaultEnglish)], key: "defaultEnglish")
+            b.choice("default-lang", "进入应用时的默认模式", [("中文", false as Any, !c.defaultEnglish), ("英文", true as Any, c.defaultEnglish)], key: "defaultEnglish")
             b.toggle("remember", "记住各应用上次的中英文模式", on: c.rememberMode, key: "rememberMode")
             b.toggle("shift", "单按 Shift 切换中英文", on: c.settings.shiftToggles, key: "shiftToggles")
         }
         b.section("typeset", "排版") { b in
             b.toggle("space", "中英文之间自动加空格", on: c.settings.autoSpace, key: "autoSpace")
-            b.toggle("braces", "中文状态下 { } 打成「」", on: c.settings.cornerBraces, key: "cornerBraces")
+            b.toggle("braces", "中文状态下 { } 输入为「」", on: c.settings.cornerBraces, key: "cornerBraces")
         }
         b.section("window", "候选窗口") { b in
-            b.stepper("font", "字号：\(Int(c.fontSize))", value: Int(c.fontSize), range: 10...40, key: "fontSize", less: "字小一号", more: "字大一号")
-            b.choice("orient", "排列", [("横排", "horizontal" as Any, c.settings.orientation == .horizontal),
+            b.stepper("font", "字号：\(Int(c.fontSize))", value: Int(c.fontSize), range: 10...40, key: "fontSize", less: "减小字号", more: "增大字号")
+            b.choice("orient", "候选排列", [("横排", "horizontal" as Any, c.settings.orientation == .horizontal),
                                          ("竖排", "vertical" as Any, c.settings.orientation == .vertical)], key: "orientation")
             b.stepper("pagesize", "每页候选数：\(c.settings.pageSize)", value: c.settings.pageSize, range: 1...9, key: "pageSize",
-                      less: "每页少一个", more: "每页多一个")
+                      less: "减少候选数", more: "增加候选数")
             b.choice("paging", "翻页键", [ShellSettings.PagingKeys.minusEqual, .commaPeriod].map {
                 (Self.pagingName($0), $0.rawValue as Any, $0 == c.settings.pagingKeys)
             }, key: "pagingKeys")
-            b.choice("inline", "拼音显示在", [("输入框里", true as Any, c.inline), ("候选窗口里", false as Any, !c.inline)], key: "inline")
+            b.choice("inline", "拼音显示位置", [("输入框", true as Any, c.inline), ("候选窗口", false as Any, !c.inline)], key: "inline")
         }
         if let p = personal(s, c) {
             let on = c.memoryEnabled(key: EngineCatalog.consentKey(p), bundled: p.bundled)
             b.section("predict", "联想") { b in
                 b.toggle("predict", "联想", on: c.settings.predict, key: "predict")
-                b.text("predict-note", "按 Tab 选用推荐。", variant: "caption")
+                b.text("predict-note", "按 Tab 选用推荐", variant: "caption")
             }
             b.section("memory", "记忆记录") { b in
                 b.toggle("memory", "记录输入内容到记忆", on: on, key: "memory")
-                b.text("memory-note", "记在本机的螺壳记忆里，用来联想、让候选更合你的习惯。关掉不删已记下的。", variant: "caption")
+                b.text("memory-note", "保存在本机的螺壳记忆中，用于联想和候选排序；关闭后已有记录保留", variant: "caption")
                 if on {
                     b.toggle("paused", "暂停所有记录", on: c.recordingPaused, key: "recordingPaused")
-                    b.text("paused-note", "临时不记，随时恢复。", variant: "caption")
+                    b.text("paused-note", "暂停期间不记录，可随时恢复", variant: "caption")
                 }
             }
         }
         b.section("more") { b in
-            b.text("more-note", "学到的词、忘掉的词、使用统计和开发模式，在输入法菜单的「设置…」里。", variant: "caption")
+            b.text("more-note", "已学词语、已忘记词语、使用统计和开发模式位于输入法菜单的「设置…」中", variant: "caption")
         }
     }
 
@@ -357,8 +357,8 @@ public struct SettingsService {
         let apps = c.apps.keys.map { ($0, appName($0)) }.sorted { $0.1.localizedStandardCompare($1.1) == .orderedAscending }
         guard !apps.isEmpty else {
             b.section("empty") { b in
-                b.text("empty-t", "还没有单独设置的应用", variant: "h4")
-                b.text("empty-c", "在应用里打开输入法菜单，选「此应用设置」。", variant: "caption")
+                b.text("empty-t", "暂无单独设置的应用", variant: "h4")
+                b.text("empty-c", "在应用中打开输入法菜单，选择「此应用设置」", variant: "caption")
             }
             return
         }
@@ -366,7 +366,7 @@ public struct SettingsService {
         let shown = Array(apps.prefix(Self.maxListedApps))
         let before = open.map { Array(apps[..<$0].prefix(Self.maxListedApps)) } ?? shown
         let after = open.map { Array(apps[($0 + 1)...].prefix(max(0, Self.maxListedApps - $0 - 1))) } ?? []
-        b.section("list", "有单独设置的应用") { b in
+        b.section("list", "应用单独设置") { b in
             for (id, name) in before { b.button("app-\(Self.slug(id))", name, action: "ime_page", context: ["page": "apps", "app": id]) }
         }
         if let i = open { appDetail(&b, c, s, apps[i]) }
@@ -377,9 +377,9 @@ public struct SettingsService {
         }
         b.section("list-end") { b in
             if apps.count > Self.maxListedApps {
-                b.text("list-more", "另有 \(apps.count - Self.maxListedApps) 个应用，在输入法菜单的「设置…」里看。", variant: "caption")
+                b.text("list-more", "另有 \(apps.count - Self.maxListedApps) 个应用，可在输入法菜单的「设置…」中查看", variant: "caption")
             }
-            b.text("list-note", "要给别的应用单独设置：在那个应用里打开输入法菜单，选「此应用设置」。", variant: "caption")
+            b.text("list-note", "为其他应用单独设置：在该应用中打开输入法菜单，选择「此应用设置」", variant: "caption")
         }
     }
 
@@ -390,18 +390,18 @@ public struct SettingsService {
             b.choice("english", "默认输入模式", [("跟随全局（\(c.defaultEnglish ? "英文" : "中文")）", "follow", a.english == nil),
                                                 ("中文", "off", a.english == false), ("英文", "on", a.english == true)],
                      key: "apps.\(app.0).english", app: app.0)
-            b.choice("inline", "拼音显示在", [("跟随全局（\(c.inline ? "输入框里" : "候选窗口里")）", "follow", a.inline == nil),
-                                             ("输入框里", "on", a.inline == true), ("候选窗口里", "off", a.inline == false)],
+            b.choice("inline", "拼音显示位置", [("跟随全局（\(c.inline ? "输入框" : "候选窗口")）", "follow", a.inline == nil),
+                                             ("输入框", "on", a.inline == true), ("候选窗口", "off", a.inline == false)],
                      key: "apps.\(app.0).inline", app: app.0)
             if hasPersonal {
-                let follow = ShellConfig.terminals.contains(app.0) ? "跟随默认（终端里关）" : "跟随全局（\(c.settings.predict ? "开" : "关")）"
-                b.choice("predict", "联想", [(follow, "follow", a.predict == nil), ("开", "on", a.predict == true), ("关", "off", a.predict == false)],
+                let follow = ShellConfig.terminals.contains(app.0) ? "跟随默认（终端中关闭）" : "跟随全局（\(c.settings.predict ? "开启" : "关闭")）"
+                b.choice("predict", "联想", [(follow, "follow", a.predict == nil), ("开启", "on", a.predict == true), ("关闭", "off", a.predict == false)],
                          key: "apps.\(app.0).predict", app: app.0)
-                b.toggle("norecord", "在这个应用里禁止记录", on: a.noRecord, key: "apps.\(app.0).noRecord", app: app.0)
-                b.text("norecord-note", "全局关着或暂停时，这里都不记。", variant: "caption")
+                b.toggle("norecord", "在此应用中禁止记录", on: a.noRecord, key: "apps.\(app.0).noRecord", app: app.0)
+                b.text("norecord-note", "全局记录关闭或暂停时，此应用同样不记录", variant: "caption")
             }
             b.button("reset", "恢复跟随全局", action: "ime_set", context: ["page": "apps", "app": app.0, "key": "apps.\(app.0).reset", "value": true])
-            b.button("back", "回到列表", action: "ime_page", context: ["page": "apps"])
+            b.button("back", "返回列表", action: "ime_page", context: ["page": "apps"])
         }
     }
 
@@ -505,7 +505,7 @@ struct PageBuilder {
         child(["id": "\(id)-t", "component": "Text", "text": title])
         child(["id": "\(id)-b", "component": "Button", "variant": "switch", "on": on, "child": "\(id)-bt",
                "action": event("ime_set", setContext(key: key, value: !on, app: app))])
-        child(["id": "\(id)-bt", "component": "Text", "text": on ? "关掉\(title)" : "打开\(title)"])
+        child(["id": "\(id)-bt", "component": "Text", "text": on ? "关闭\(title)" : "开启\(title)"])
     }
 
     /// 单选：标题一行，下面每个选项一个按钮，当前那个是主按钮（ChoicePicker 改了值不调工具）。

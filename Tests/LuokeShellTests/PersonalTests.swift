@@ -577,6 +577,8 @@ import Testing
             self.answer(200, {"contract": 1, "who": self.headers.get("X-Luoke-Accessory"),
                               "tasks": {"luoke-ime.rerank": {"kind": "score", "params": {"batch": 2, "max_chars": 3}}}})
         def do_POST(self):
+            if self.path == "/tasks/luoke-ime.transcribe/v1/transcribe":  # 像真的主控：先核版本，不认的不读正文就答、关连接
+                return self.answer(403, {"code": "unknown_accessory", "message": "luoke-ime/test 不在已验证版本里", "retry_after": None})
             req = json.loads(self.rfile.read(int(self.headers["Content-Length"])) or b"{}")
             if self.path == "/tasks/luoke-ime.rerank/v1/score":
                 if req["context"] == "加载中":
@@ -632,10 +634,26 @@ import Testing
         #expect(notReady.error?["retry_after"] == .number(2))
     }
 
+    /// 主控对不认的版本先答 403、不读正文就关连接：送一大块音频时写到一半就断了，原来当成「未连接螺壳」。
+    @Test func 主控没读完请求就答复了_照它的答复算() throws {
+        let hub = try Hub()
+        let c = HubClient(accessory: "luoke-ime/test", socketPath: hub.socket)
+        let audio = String(repeating: "A", count: 2_000_000)
+        let r = AskBroker.hubReply(3, c.request("POST", "/tasks/luoke-ime.transcribe/v1/transcribe",
+                                                body: .object(["session": .string("s"), "seq": .number(0), "audio": .string(audio)])))
+        #expect(r.errorCode == "unknown_accessory")
+    }
+
     @Test func 主控没在运行时答不可用() {
         let c = HubClient(accessory: "luoke-ime/test", socketPath: "/tmp/no-such-hub-\(UUID().uuidString.prefix(6))")
         let r = AskBroker.hubReply(1, c.request("GET", "/tasks"))
         #expect(r.errorCode == "unavailable")
+        #expect(!c.reachable) // 菜单里据此提示「未连接螺壳」
+    }
+
+    @Test func 主控在运行时连得上() throws {
+        let hub = try Hub()
+        #expect(HubClient(accessory: "luoke-ime/test", socketPath: hub.socket).reachable)
     }
 
     @Test func 只转输入法自己的任务() {
