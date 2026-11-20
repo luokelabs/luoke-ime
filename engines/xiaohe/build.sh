@@ -5,7 +5,7 @@ set -euo pipefail
 here=${0:A:h}
 root=${here:h:h}
 cd $here
-# 部署目标 macOS 14（和 LuokeIME.app 一样）：不写就是本机的系统版本，装到更老的系统上起不来
+# 部署目标 macOS 14（不高于 LuokeIME.app 的 LSMinimumSystemVersion 就行，比它低没关系）：不写就是本机的系统版本，装到更老的系统上起不来
 export MACOSX_DEPLOYMENT_TARGET=14.0
 lib=$root/vendor/librime
 $root/scripts/build-librime.sh   # 编好的版本对得上就跳过

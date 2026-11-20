@@ -328,11 +328,17 @@ public final class Session {
     }
 
     /// 按了鼠标（比如 ⇧ 加点击扩选）：之后松开 Shift 不算单按。
+    /// 正在输入时先照切走收尾上屏：这一下在应用处理点击之前，光标还在原处。等到失去焦点再上屏，Chromium、Electron
+    /// 已经自己结束了组字，上屏的字落不进去（拼音显示在候选窗里时光标处只有零宽空格，打的字就整段丢了）。
     public func pointerPressed() {
         shiftClean = false
         spoilPress()
+        pump(render: false)
+        settleComma(",", full: true)
+        let composing = isComposing
+        if composing { finish(budget: 0, auto: true) }
         forgetHistory() // 光标可能被点到了别处
-        if prediction != nil {
+        if composing || prediction != nil {
             prediction = nil
             render()
         }

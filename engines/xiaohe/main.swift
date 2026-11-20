@@ -122,6 +122,9 @@ var roundsOption: Int?
 /// pause_when：slow（只在主控标了 slow 的机器上，默认）或 always。
 var pauseOption = 0.0
 var pauseAlways = false
+/// 选项 half（默认关，评测对照用）：双拼末尾只敲了声母的那个键也重排。默认不重排：音节还没打完，下一个键多半就换了，
+/// 博客语料逐键测，打分少三四成，按空格时上屏的首选不变（见 README，luokelabs/luoke-ime#10）。
+var halfOption = false
 var correctOption = true // 选项 correct：打错纠正（Typo.swift），评测对照用
 var budget: Budget {
     var b: Budget
@@ -145,6 +148,7 @@ func startHelpers(_ options: [String: Any]) {
     roundsOption = options["rounds"] as? Int
     pauseOption = (options["pause"] as? Double) ?? Double(options["pause"] as? Int ?? 0)
     pauseAlways = options["pause_when"] as? String == "always"
+    halfOption = options["half"] as? Bool ?? false
     correctOption = options["correct"] as? Bool ?? true
     let fuzzy = (options["fuzzy"] as? [String] ?? []).map { $0.components(separatedBy: "_") }.filter { $0.count == 2 }
     mecabra.enableFuzzy(fuzzy)
@@ -216,14 +220,16 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
 
 var decided = Decided()
 
-/// 快的那份答复（苹果和 RIME 的候选）。refine：要不要让模型重排（至少两个音节、全部读得通、用户没在这串键上改选过）；
+/// 快的那份答复（苹果和 RIME 的候选）。refine：要不要让模型重排（至少两个音节、全部读得通、用户没在这串键上改选过；
+/// 双拼末尾只敲了声母时不重排，除非开了 half）；
 /// correct：要不要纠错（双拼、整串读不通、至少 4 个键、用户没在这串键上改选过，见 Typo.swift）。
 typealias Fast = (display: String, candidates: [[String: Any]], remembered: Bool, english: Set<String>, refine: Bool, correct: Bool)
 func sendFast(id: Int, input: String) -> Fast {
     memory.reloadIfChanged()
     let f = fastAnswer(input)
     stats.answered(input, fastTop: f.candidates.first?["text"] as? String)
-    let refine = scorer.isReady && reading(input).refinable && !f.remembered
+    let half = Scheme.current.isDouble && input.count % 2 == 1 // 双拼每个音节两个键：单数个键时末尾只有声母
+    let refine = scorer.isReady && reading(input).refinable && !f.remembered && (halfOption || !half)
     let correct = correctOption && scorer.isReady && Scheme.current.isDouble && input.count >= 4 && !reading(input).complete && !f.remembered
     send(["type": "answer", "id": id, "display": f.display, "candidates": f.candidates, "more": refine || correct])
     return (f.display, f.candidates, f.remembered, f.english, refine, correct)

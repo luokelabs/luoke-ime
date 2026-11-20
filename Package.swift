@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "luoke-ime",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS("26.2")],
     products: [
         .library(name: "LuokeShell", targets: ["LuokeShell"]),
         .executable(name: "luoke-ime", targets: ["luoke-ime"]),

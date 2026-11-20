@@ -77,10 +77,14 @@ public struct EngineCatalog {
         return ok.first { !$0.bundled } ?? ok.first
     }
 
-    /// 当前引擎：设置里指定的（能用的话），否则第一个自带的打字引擎。第三方引擎不会被自动选中。
+    /// 没选过输入方案时用的：全拼（大多数人只会全拼；用双拼的人会自己去改）。
+    public static let defaultTyping = "quanpin"
+
+    /// 当前引擎：设置里指定的（能用的话），否则自带的全拼，没有全拼时第一个自带的打字引擎。第三方引擎不会被自动选中。
     public func current(_ config: ShellConfig) -> Entry? {
         if let id = config.currentEngine, let e = typing.first(where: { $0.id == id }), Self.usable(e, approved: config.approvedEngines) { return e }
-        return typing.first { $0.bundled && Self.usable($0, approved: config.approvedEngines) }
+        let own = typing.filter { $0.bundled && Self.usable($0, approved: config.approvedEngines) }
+        return own.first { $0.id == Self.defaultTyping } ?? own.first
     }
 
     /// 第三方引擎不能有的声明（联网、GPU、额外的写入位置）；自带的为 nil。

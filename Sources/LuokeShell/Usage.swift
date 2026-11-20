@@ -56,6 +56,14 @@ public final class Usage {
         return out
     }
 
+    /// 最近 `lastDays` 天（含今天）按天的计数，从早到晚；没有计数的那天是空的。
+    public func daily(lastDays: Int) -> [(date: String, counts: [String: Int])] {
+        (0..<lastDays).reversed().map { i in
+            let d = Self.day(now().addingTimeInterval(-Double(i) * 86_400))
+            return (d, (days[d] ?? [:]).filter { Event(rawValue: $0.key) != nil })
+        }
+    }
+
     public func reset() {
         days = [:]
         dirty = true

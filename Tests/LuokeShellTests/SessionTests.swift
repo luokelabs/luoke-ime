@@ -402,6 +402,26 @@ import Testing
         #expect(c.auto)
     }
 
+    @Test func 输入中点鼠标先收尾上屏_和切走一样() {
+        let r = Rig()
+        r.type("wobuzd")
+        r.elapse(0.01)
+        r.press(.right) // 高亮"我"
+        r.session.pointerPressed()
+        #expect(r.client.document == "我buzd")
+        #expect(r.client.view.marked.isEmpty)
+        guard case let .committed(c)? = r.channel.sent.last(where: { if case .committed = $0 { return true } else { return false } }) else {
+            Issue.record("没有发上屏反馈"); return
+        }
+        #expect(c.auto)
+        r.session.focusLost() // 之后再失去焦点不会再上屏一遍
+        #expect(r.client.document == "我buzd")
+
+        let idle = Rig()
+        idle.session.pointerPressed() // 没在输入时点鼠标什么也不上屏
+        #expect(idle.client.document.isEmpty)
+    }
+
     @Test func 组合键先收尾再放行() {
         let r = Rig()
         r.type("wo")

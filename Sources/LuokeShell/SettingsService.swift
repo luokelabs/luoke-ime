@@ -3,9 +3,10 @@ import Foundation
 /// 螺壳主窗口里的「螺壳输入法」应用页：`luoke-ime mcp` 每次答一个请求（luoke-agent 工具协议 §2a），
 /// 页面照现在的设置文件画（A2UI，协议 §4），用户在页上点了，改设置文件（ADR 0018）。
 ///
-/// 和输入法自己的设置窗口并存，改的是同一份 `~/.luoke/ime/settings.json`：正在运行的输入法每秒看一次修改时间，
-/// 读到了马上生效，自己存盘前也先读一遍外面改过的。这里只改一张写死的表（`SettingsService.apply`），
-/// 确认第三方引擎、主控地址、开发模式这些不在表里；学到的词、忘掉的词要经正在运行的打字引擎，留在输入法自己的窗口。
+/// 改的是 `~/.luoke/ime/settings.json`：正在运行的输入法每秒看一次修改时间，读到了马上生效，自己存盘前也先读一遍外面改过的。
+/// `ime_set` 只改一张写死的表（`SettingsService.apply`），确认第三方引擎、主控地址不在表里。
+/// 主窗口的设置页由 luoke-agent 照 `data/settings` 拼（只有代号、数字和路径，没有句子），页上的动作走 `ime_set`、`ime_do`；
+/// 已学词语、已忘记词语、使用计数要正在运行的输入法来做，经 ShellRequests 交给它。旧的 A2UI 页（`page/…`）留到 agent 换过去。
 public struct SettingsService {
     public static let protocolVersion = "2026-07-28"
     public static let catalogId = "ai.luoke/a2ui/agent/1"
@@ -22,6 +23,12 @@ public struct SettingsService {
     public var version: String
     /// 应用的名字（命令行用 NSWorkspace 查；这一层只依赖 Foundation）。
     public var appName: (String) -> String
+    /// 使用计数按哪天算（录场景样例时固定）。
+    public var now: () -> Date = Date.init
+    /// 等正在运行的输入法答复（ShellRequests）最多多久。
+    public var requestTimeout: TimeInterval = 3
+    /// 没设过「语音整理」时默认开不开（按这台 Mac 的内存；录场景样例时固定）。
+    public var voiceTidyDefault = ShellConfig.voiceTidyDefault
 
     public init(paths: Paths, bundledEngines: URL?, version: String, appName: @escaping (String) -> String = { $0 }) {
         self.paths = paths
@@ -57,13 +64,21 @@ public struct SettingsService {
             return Self.result(rid, ["supportedVersions": [Self.protocolVersion], "capabilities": ["tools": [:], "resources": [:]],
                                      "_meta": ["io.modelcontextprotocol/serverInfo": ["name": "luoke-ime", "version": version]]])
         case "resources/list":
-            return Self.result(rid, ["resources": Self.pages.map { ["uri": "page/\($0.id)", "name": $0.title, "mimeType": "application/json"] }])
+            return Self.result(rid, ["resources": Self.pages.map { ["uri": "page/\($0.id)", "name": $0.title, "mimeType": "application/json"] }
+                                     + Self.dataResources.map { ["uri": "data/\($0)", "name": $0, "mimeType": "application/json"] }])
         case "resources/read":
             let uri = p["uri"] as? String ?? ""
             // agent 每轮都读 outbox，答错误会被当成输入法没在运行（工具协议 §2、§3）。输入法现在没有要报的事。
             if uri == "outbox" || uri == "luoke://luoke-ime/outbox" {
                 return Self.result(rid, ["contents": [["uri": uri, "mimeType": "application/json",
                                                        "text": Self.serialize(["items": [Any]()])]]])
+            }
+            if uri == "data/settings" || uri == "data/apps" || uri.hasPrefix("data/apps?") {
+                let state = load()
+                // 菜单「此应用设置」点进来的：data/apps?app=<bundle id>
+                let target = URLComponents(string: uri)?.queryItems?.first { $0.name == "app" }?.value
+                let data = uri == "data/settings" ? settingsData(state) : appsData(state, target: target)
+                return Self.result(rid, ["contents": [["uri": uri, "mimeType": "application/json", "text": Self.serialize(data)]]])
             }
             guard uri.hasPrefix("page/"), let page = Self.pages.first(where: { "page/\($0.id)" == uri })?.id else {
                 return Self.rpcError(rid, -32002, "没有这个资源", data: ["uri": uri])
@@ -86,6 +101,12 @@ public struct SettingsService {
          "inputSchema": ["type": "object", "required": ["key", "value"],
                          "properties": ["page": ["type": "string"], "app": ["type": "string"], "key": ["type": "string"], "value": [:]]],
          "annotations": ["readOnlyHint": false]],
+        ["name": "ime_do", "title": "输入法的数据操作",
+         "description": "清除已学词语、恢复已忘记的词语、清零使用统计、开关开发模式（只在用户点了页上的按钮时调）",
+         "inputSchema": ["type": "object", "required": ["op"],
+                         "properties": ["op": ["type": "string", "enum": ["clear_learned", "restore", "reset_usage", "dev_mode"]],
+                                        "engine": ["type": "string"], "id": ["type": "string"], "on": ["type": "boolean"]]],
+         "annotations": ["readOnlyHint": false, "destructiveHint": true]],
         ["name": "ime_page", "title": "选择「各应用」页展开的应用",
          "description": "带 app 展开这个应用的设置，不带回到列表（只记在 window-page.json 里，不改输入法的行为）",
          "inputSchema": ["type": "object", "properties": ["page": ["type": "string"], "app": ["type": "string"]]],
@@ -94,7 +115,7 @@ public struct SettingsService {
 
     private func call(_ rid: Any, _ p: [String: Any], _ meta: [String: Any]) -> [String: Any] {
         let name = p["name"] as? String ?? ""
-        guard name == "ime_set" || name == "ime_page" else { return Self.rpcError(rid, -32602, "没有这个工具：\(name.isEmpty ? "?" : name)") }
+        guard ["ime_set", "ime_page", "ime_do"].contains(name) else { return Self.rpcError(rid, -32602, "没有这个工具：\(name.isEmpty ? "?" : name)") }
         guard let args = (p["arguments"] ?? [String: Any]()) as? [String: Any] else { return Self.rpcError(rid, -32602, "arguments 要是对象") }
         let page = Self.pages.contains { $0.id == args["page"] as? String } ? args["page"] as! String : "settings"
         if name == "ime_page" {
@@ -108,6 +129,7 @@ public struct SettingsService {
         guard Self.validUserAction(meta[Self.userAction]) else {
             return Self.result(rid, Self.toolError("needs_user_action", "此设置需由用户在螺壳窗口中修改"))
         }
+        if name == "ime_do" { return Self.result(rid, act(args)) }
         var state = load()
         guard var config = state.config else { return Self.result(rid, Self.toolError("failed", "设置文件无法读取，未修改；可在输入法菜单的「设置…」中修改")) }
         guard !config.migratedFromV1 else { return Self.result(rid, Self.toolError("not_ready", "输入法设置尚未升级为新版本，使用输入法后即可修改")) }
@@ -121,7 +143,8 @@ public struct SettingsService {
             }
             state.config = config
             return Self.result(rid, ["content": [["type": "text", "text": text]], "isError": false,
-                                     "structuredContent": ["card": messages(page, state: state, app: viewedApp())]])
+                                     "structuredContent": ["card": messages(page, state: state, app: viewedApp()),
+                                                           "data": ["key": key, "value": value]]])
         }
     }
 
@@ -236,10 +259,10 @@ public struct SettingsService {
         }
     }
 
-    /// `apps.<bundle id>.<项>`：只改已经有单独设置的应用（应用是在输入法菜单的「此应用设置」里加的）。
+    /// `apps.<bundle id>.<项>`：还没有单独设置的应用（从菜单「此应用设置」点进来的）改了第一项就记下。
     private func applyApp(key: String, value: Any, to c: inout ShellConfig) -> Applied {
         let bad = Applied.failure("值无效，未修改")
-        guard let app = Self.appOf(key), c.apps[app] != nil, let item = key.split(separator: ".").last.map(String.init) else {
+        guard let app = Self.appOf(key), Self.validBundleID(app), let item = key.split(separator: ".").last.map(String.init) else {
             return .failure("此应用没有单独设置，未修改")
         }
         let name = appName(app)
@@ -256,6 +279,11 @@ public struct SettingsService {
         guard let path = paths[item], let raw = value as? String, ["follow", "on", "off"].contains(raw) else { return .failure("未知设置，未修改") }
         c.setApp(app) { $0[keyPath: path] = raw == "follow" ? nil : raw == "on" }
         return .success("「\(name)」设置已修改")
+    }
+
+    /// bundle id 的写法：字母、数字、点、连字符，最多 255 个字符（不认的不写进设置文件）。
+    static func validBundleID(_ id: String) -> Bool {
+        !id.isEmpty && id.count <= 255 && id.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-") }
     }
 
     /// `apps.com.example.app.english` 里的应用：去掉开头的 apps. 和最后一段。

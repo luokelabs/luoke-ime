@@ -21,9 +21,9 @@ enum InputSource {
         identifier(TISCopyCurrentKeyboardInputSource().takeRetainedValue())
     }
 
-    /// 注册安装包并请求启用输入模式。
-    /// macOS 26 起，第三方输入法只能由用户在系统设置里添加（记录在 com.apple.inputsources 的
-    /// AppleEnabledThirdPartyInputSources）：启用调用会返回成功，但只是打开系统设置、弹出一个点了也不生效的确认，所以 26 起不调。
+    /// 注册安装包，不请求启用。
+    /// 第三方输入法只能由用户在系统设置里添加（记录在 com.apple.inputsources 的
+    /// AppleEnabledThirdPartyInputSources）：启用调用会返回成功，但只是打开系统设置、弹出一个点了也不生效的确认，所以不调。
     /// 系统是异步收录新安装包的，所以最多等 `timeout` 秒。
     /// 已经是"已启用、可选"的（换装）就什么都不做：macOS 26 上对已启用的源再请求启用，有时会拉起系统设置要用户再确认一次，
     /// 没确认之前螺壳可能就从输入法菜单里没了、TIS 却照样说已启用（换装时拉起过系统设置的，之后有两次
@@ -39,12 +39,11 @@ enum InputSource {
         if status != noErr { FileHandle.standardError.write(Data("TISRegisterInputSource 返回 \(status)\n".utf8)) }
         let deadline = Date().addingTimeInterval(timeout)
         repeat {
-            for s in sources() where identifier(s) == modeID {
-                // macOS 26 起不请求启用：它会弹出"Allow "Luoke" to enable …?"，可用户点了"允许"也加不上
+            if sources().contains(where: { identifier($0) == modeID }) {
+                // 不请求启用：它会弹出"Allow "Luoke" to enable …?"，可用户点了"允许"也加不上
                 //（测试机（macOS 26.5.1）上实测两次，请求的进程留着也一样，luokelabs/luoke-ime#13），
                 // 反倒误导用户。只注册，让螺壳出现在系统设置"编辑… → +"的列表里，由用户自己添加
-                if #available(macOS 26, *) { return true }
-                return TISEnableInputSource(s) == noErr
+                return true
             }
             RunLoop.current.run(until: Date().addingTimeInterval(0.25))
         } while Date() < deadline

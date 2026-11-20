@@ -19,8 +19,8 @@ Bundled engines:
 
 ## Status
 
-- **In closed beta** (beta1 ships input method 0.1.20; `main` is at 0.1.104).
-- **Requirements**: a Mac with Apple silicon, macOS 26 or later. So far verified only on macOS 26 and 27.
+- **In closed beta** (beta1 ships input method 0.1.20; `main` is at 0.1.115).
+- **Requirements**: a Mac with Apple silicon, macOS 26.2 or later. So far verified only on macOS 26 and 27.
 - How fast the model runs depends on the chip. On Pro and Max chips it almost always finishes before you press space. Slower machines such as the M1 run fewer steps, and the first candidate is still more accurate than Apple's; see "slow machines" in the [Xiaohe engine README](engines/xiaohe/README.md). How the accuracy, speed and suggestion numbers were measured, and on which chips, is in [docs/评测.md](docs/评测.md) (in Chinese). Without Luoke, or when it is unavailable, typing works as usual with candidates from Apple and RIME only, without re-ranking or suggestions.
 - Most candidates come from Apple's converter that ships with macOS (the private library `libmecabra`), called through non-public interfaces. A macOS update may break it. If that happens, Xiaohe, Ziranma and Quanpin turn themselves off and say why.
 

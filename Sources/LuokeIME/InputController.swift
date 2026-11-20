@@ -144,7 +144,14 @@ final class LuokeInputController: IMKInputController, SessionClient {
     var personalThirdParty: Bool { manager.personalIsThirdParty }
 
     func insert(_ text: String) {
-        textClient?.insertText(text, replacementRange: NSRange(location: NSNotFound, length: NSNotFound))
+        let none = NSRange(location: NSNotFound, length: NSNotFound)
+        // 带换行的（整理过的语音，有分段、列表）要顶掉光标处的显示串时，先把显示串清掉再插：网页的富文本编辑框（Quill，
+        // Gemini 的输入框就是）结束组字时拿新旧文字比对，新的里有换行就比错，把显示串里的字挪到最后
+        // （「保险：」成了「保 … 。。险：」）。Chrome 里照 Quill 重现过，先清掉再插就对；普通输入框、不带换行的两种写法一样
+        if text.contains("\n"), !lastMarked.isEmpty, let c = textClient {
+            c.setMarkedText(NSAttributedString(string: ""), selectionRange: NSRange(location: 0, length: 0), replacementRange: none)
+        }
+        textClient?.insertText(text, replacementRange: none)
         lastMarked = "" // 上屏会顶掉光标处正在输入的文字
     }
 

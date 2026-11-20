@@ -6,7 +6,7 @@
 #   LUOKE_REBUILD=1 scripts/build-librime.sh   重编
 #
 # 版本钉住，和之前用的 Homebrew 那份一样：librime 1.17.0、librime-lua ec52e48、boost 1.89.0（只用头文件）。
-# 源码下载到 vendor/librime-src/（不进仓库）。部署目标 macOS 14（和 LuokeIME.app 的 LSMinimumSystemVersion 一样）。
+# 源码下载到 vendor/librime-src/（不进仓库）。部署目标 macOS 14（不高于 LuokeIME.app 的 LSMinimumSystemVersion 就行，比它低没关系，不用为改它重编）。
 set -euo pipefail
 root=${0:A:h:h}
 out=$root/vendor/librime

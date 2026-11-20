@@ -168,7 +168,7 @@ import Testing
         for (key, value) in [("approvedEngines", ["sneaky": "x"]), ("approved_engines", ["sneaky": "x"]), ("devMode", ["xiaohe"]),
                              ("hub", "/tmp/x"), ("currentEngine", "sneaky"), ("currentEngine", "nope"), ("fuzzyOn", 1),
                              ("fontSize", 99), ("fontSize", true), ("voiceKey", "left_option"), ("fuzzyPairs.zh_ch", true),
-                             ("apps.com.example.other.english", "on")] as [(String, Any)] {
+                             ("apps.com/../x.english", "on"), ("apps.com.example.other.english", "maybe"), ("apps.com.example.other.nope", "on")] as [(String, Any)] {
             #expect(set(["key": key, "value": value])["isError"] as? Bool == true, "\(key) = \(value) 不该改成")
         }
         #expect(config() == ShellConfig(), "什么都没改")

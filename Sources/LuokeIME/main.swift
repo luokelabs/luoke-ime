@@ -5,7 +5,7 @@ import LuokeShell
 // 螺壳输入法（macOS 外壳）。
 //
 //   LuokeIME                         作为输入法运行（由系统启动）
-//   LuokeIME --register              注册输入源（macOS 26 以前还请求启用；26 起要用户在系统设置里自己添加）
+//   LuokeIME --register              注册输入源（不请求启用：要用户在系统设置里自己添加）
 //   LuokeIME --select                把螺壳设为当前输入源，并核对真的切过去了（0 切过去了，1 调用失败，3 调用成功但没切过去）
 //   LuokeIME --disable               停用输入源
 //   LuokeIME --current               打印当前输入源

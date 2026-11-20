@@ -369,6 +369,7 @@ final class EngineManager {
     }
 
     private func poll() {
+        for r in ShellRequests.take(paths) { ShellRequests.answer(paths, r.id, handle(r)) }
         guard reloadSettingsIfChanged() else { return }
         // 引擎目录里增删了引擎
         let now = ((try? FileManager.default.contentsOfDirectory(atPath: paths.engines.path)) ?? []).filter { !$0.hasPrefix(".") }.sorted()
@@ -506,6 +507,29 @@ final class EngineManager {
             return ForgottenWord(input: i, text: t)
         }
         return ForgottenList(items: items, older: o["older"] as? Int ?? 0)
+    }
+
+    /// 主窗口设置页经 `luoke-ime mcp` 交来的请求（ShellRequests）：页上已经确认过、带了用户操作，这里照做，
+    /// 答复只有代号和数字。打字引擎换了的话，清的是现在这个（答复里带上它的标识）。
+    private func handle(_ r: ShellRequests.Request) -> [String: Any] {
+        var out: [String: Any] = ["op": r.op]
+        func fail(_ code: String) -> [String: Any] { out["ok"] = false; out["code"] = code; return out }
+        switch r.op {
+        case "clear_learned":
+            guard let t = typing, r.args["engine"] == nil || r.args["engine"] == t.id else { return fail("engine_changed") }
+            guard forgetAll(t) else { return fail("engine_not_running") }
+            out["engine"] = t.id
+        case "restore":
+            guard let input = r.args["input"], let text = r.args["text"] else { return fail("invalid") }
+            guard forgottenWords().items.contains(ForgottenWord(input: input, text: text)) else { return fail("not_found") }
+            guard unforget(input: input, text: text) else { return fail("engine_not_running") }
+        case "reset_usage":
+            usage.reset()
+        default:
+            return fail("unknown_op")
+        }
+        out["ok"] = true
+        return out
     }
 
     /// 撤销忘掉一个词：告诉打字引擎（它在运行、声明了 forget_all 时）。

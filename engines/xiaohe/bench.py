@@ -128,6 +128,8 @@ def main():
     routes = {}  # 转给个人化组件的号 → 引擎发问时的号
     delayed = set()  # 其中要晚一点交给引擎的打分（--score-delay）
     ask_no = [0]
+    score_sent = {}  # 转给个人化组件的打分（有候选的）：号 → 发出的时刻
+    score_stats = {"n": 0, "ms": []}  # 引擎问了几次打分、每次模型的用时（不含 --score-delay）
 
     def to_engine(obj):
         with write_lock:
@@ -229,6 +231,8 @@ def main():
             r = json.loads(line)
             if r.get("type") == "reply" and r.get("id") in routes:
                 late = r["id"] in delayed
+                if r["id"] in score_sent:
+                    score_stats["ms"].append(time.perf_counter() - score_sent.pop(r["id"]))
                 delayed.discard(r["id"])
                 r["id"] = routes.pop(r["id"])
                 if late and args.score_delay > 0:
@@ -258,6 +262,8 @@ def main():
                 routes[ask_no[0]] = a["id"]
                 if a.get("method") == "score" and (a.get("params") or {}).get("candidates"):
                     delayed.add(ask_no[0])
+                    score_sent[ask_no[0]] = time.perf_counter()
+                    score_stats["n"] += 1
                 try:
                     to_personal({"type": "ask", "id": ask_no[0], "from": "bench", "method": a.get("method"), "params": a.get("params", {})})
                 except OSError as e:  # 个人化组件退出了：像壳一样答不可用，别让读引擎输出的线程死掉
@@ -354,9 +360,11 @@ def main():
     lat_first, lat_settled, lat_last = [], [], []
     items = []  # 证据里的逐条结果（不带原文）
     refused_before = sum(hub_stats["errors"].values())  # 开跑前等模型就绪时的拒绝不算
+    score_stats["n"], score_stats["ms"] = 0, []  # 只算计时那段
     for r in rows:
         ctx = "" if r[1] == "-" else r[1].replace("⏎", "\n")[-120:]
         keys, gold = r[2], r[3]
+        scores_before = score_stats["n"]
         if args.typing is not None:
             for i in range(1, len(keys)):
                 q = query(keys[:i], ctx)
@@ -390,7 +398,7 @@ def main():
         items.append(item)
         if dump:
             dump.write(json.dumps({"at": round(wall, 3), "keys": keys, "ctx": ctx, "gold": gold, "fast": first, "settled": mid, "final": final,
-                                   "ms": [round(at * 1000) for at, _ in got]}, ensure_ascii=False) + "\n")
+                                   "ms": [round(at * 1000) for at, _ in got], "scores": score_stats["n"] - scores_before}, ensure_ascii=False) + "\n")
         if len(items) % 50 == 0:  # 进度走标准错误：主控的发布脚本按它判断是不是停住了（不是慢）
             print(f"进度 {len(items)}/{len(rows)}", file=sys.stderr, flush=True)
 
@@ -411,6 +419,10 @@ def main():
         hm = sorted(hub_stats["ms"]) or [0]
         print(f"主控打分 {hub_stats['n']} 次：前缀缓存命中 {100 * hub_stats['hit'] / max(hub_stats['n'], 1):.1f}%，"
               f"主控里的用时 p50 {hm[len(hm) // 2]:.0f} ms p90 {hm[int(len(hm) * 0.9)]:.0f} ms；拒绝 {hub_stats['errors'] or '无'}")
+    if score_stats["n"]:
+        sm = sorted(score_stats["ms"]) or [0]
+        print(f"引擎问打分 {score_stats['n']} 次（每条 {score_stats['n'] / n:.1f} 次）：模型用时合计 {sum(sm):.1f} 秒，"
+              f"p50 {sm[len(sm) // 2] * 1000:.0f} ms p90 {sm[int(len(sm) * 0.9)] * 1000:.0f} ms")
     if args.typing:
         for g in GAPS:
             print(f"停顿 {g} ms 后按空格（壳最多再等 {SPACE_WAIT * 1000:.0f} ms）：不必再等的 {100 * caught[g] / n:.1f}%，上屏的首选准确率 {100 * space_ok[g] / n:.1f}%")
