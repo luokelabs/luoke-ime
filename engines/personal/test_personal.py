@@ -183,6 +183,24 @@ class 改选和删改(unittest.TestCase):
         g.r.deleted({"type": "deleted", "after": 9, "count": 2})
         self.assertEqual(g.topics(personal.CORRECTION)[0]["text"], "删掉了刚上屏的 2 个字")
 
+    def test_上屏后在输入框里改了字_这一段照改过的记_另记一条改正(self):
+        g = Rig()
+        g.r.committed(commit("该往哪个日历例假", id=1, context=""))
+        g.r.revised({"type": "revised", "after": 1, "before": "该往哪个日历例假", "text": "该往哪个日历里加"})
+        g.r.close()
+        self.assertEqual(g.texts(), ["该往哪个日历里加"])
+        c = g.topics(personal.CORRECTION)[0]
+        self.assertEqual(c["data"]["what"], "revised")
+        self.assertEqual((c["data"]["before"], c["data"]["after"]), ("例假", "里加"))
+
+    def test_改的不在手上这一段里_只记一条改正(self):
+        g = Rig()
+        g.r.revised({"type": "revised", "after": 9, "before": "口令8z日历例假", "text": "口令8z日历里加"})
+        c = g.topics(personal.CORRECTION)
+        self.assertEqual(len(c), 1)
+        self.assertEqual(c[0]["text"], "把刚上屏的「例假」改成了「里加」")
+        self.assertEqual(g.texts(), [])
+
     def test_忘掉候选记成用户的陈述(self):
         g = Rig()
         g.r.forget({"type": "forget", "input": "xkyy", "text": "行云", "source": "xiaohe"})

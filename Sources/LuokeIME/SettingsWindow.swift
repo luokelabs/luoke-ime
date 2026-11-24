@@ -286,7 +286,7 @@ struct SettingsView: View {
             ToolsPage(model: model).tabItem { Text("高级") }.tag(SettingsModel.Tab.tools)
         }
         .padding(12)
-        .tint(Color.lkPrimary)   // 开关用品牌深色，不用系统蓝（规范第 6 节）
+        .tint(Color.lkToggle)    // 开关用品牌深色，不用系统蓝（规范第 6 节）；深色下见 lkToggle
         .frame(width: 640, height: 560)
     }
 }

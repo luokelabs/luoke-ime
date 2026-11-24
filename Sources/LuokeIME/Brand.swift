@@ -2,16 +2,18 @@ import AppKit
 import SwiftUI
 
 /// 螺壳应用界面规范 v2 的颜色 token（第 2、11 节，工作台那组）。
-/// 浅色、深色都用暖色：浅色墨棕的字、奶白的底，深色深棕的底、奶油色的字。代码里不写死色值，都从这里取。
+/// 浅色墨棕的字、奶白的底；深色用暖灰的底（#1C1B19）、近白的字（#FAF8F5），次要字 #B5AFA8，不用棕色（品牌深色标准）。代码里不写死色值，都从这里取。
 extension Color {
-    static let lkBackground = Color(light: 0xFCFAF7, dark: 0x1F1511)
-    static let lkCard = Color(light: 0xFFFFFF, dark: 0x2C1F19)
-    static let lkForeground = Color(light: 0x2B1A12, dark: 0xFBF3E8)
-    static let lkMuted = Color(light: 0x7A6558, dark: 0xBBA596)
-    static let lkMutedBackground = Color(light: 0xF4EEE6, dark: 0x372720)
-    static let lkBorder = Color(light: 0xECE4DA, dark: 0x3B2A22)
-    static let lkPrimary = Color(light: 0x3A1F14, dark: 0xFDF4E4)
-    static let lkPrimaryForeground = Color(light: 0xFDF8F1, dark: 0x2B1A12)
+    static let lkBackground = Color(light: 0xFCFAF7, dark: 0x1C1B19)
+    static let lkCard = Color(light: 0xFFFFFF, dark: 0x22211F)
+    static let lkForeground = Color(light: 0x2B1A12, dark: 0xFAF8F5)
+    static let lkMuted = Color(light: 0x7A6558, dark: 0xB5AFA8)
+    static let lkMutedBackground = Color(light: 0xF4EEE6, dark: 0x262422)
+    static let lkBorder = Color(light: 0xECE4DA, dark: 0x33312E)
+    static let lkPrimary = Color(light: 0x3A1F14, dark: 0xFAF8F5)
+    static let lkPrimaryForeground = Color(light: 0xFDF8F1, dark: 0x1C1B19)
+    /// 开关的颜色：浅色同 lkPrimary；深色下系统会把开关的 tint 加深、加饱和，带一点暖色的近白就成了棕色，所以深色用不带色相的灰。
+    static let lkToggle = Color(light: 0x3A1F14, dark: 0xE6E6E6)
     static let lkBrand = Color(light: 0xE8556B, dark: 0xF2707F)
     static let lkSuccess = Color(light: 0x2F7A4F, dark: 0x5CC98A)
     static let lkSuccessSoft = Color(light: 0xE4F2E8, dark: 0x16301F)

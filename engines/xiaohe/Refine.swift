@@ -29,6 +29,9 @@ struct Refiner {
     let rime: Rime?
     let scorer: Scorer
     let gate: Double
+    /// 只差在 他 / 她 / 它 的两句之间换首选的门槛（选项 pronoun_gate）。三个字同音，苹果按字频总给「他」，
+    /// 指物、指人只有前文看得出来，所以这时比别处更信模型。
+    var pronounGate: Double? = nil
     var budget = Budget.full
     /// 已经有更新的询问了：放弃。
     let cancelled: () -> Bool
@@ -136,7 +139,9 @@ struct Refiner {
             profile?.hyps.append(unique.count)
             let lp = shown.map { scores[index[$0]!] }
             var best = lp.indices.max { lp[$0] < lp[$1] }!
-            if let d, let di = hyps.firstIndex(of: d), lp[best] - lp[di] < gate { best = di }
+            if let d, let di = hyps.firstIndex(of: d), lp[best] - lp[di] < (pronounGate.flatMap { onlyPronouns(hyps[best], d) ? $0 : nil } ?? gate) {
+                best = di
+            }
             let pick = first[hyps[best]]!
             report(Step(word: pick.word, consume: pick.consume, lookahead: rest.count - pick.consume))
             if last { // 首词之后的补全没逐词选过，不记成定下的词
@@ -202,4 +207,11 @@ final class Profile {
         String(format: "沿用 %d 个词，苹果 %.0f ms，RIME %.0f ms，模型 %.0f ms（其间预备下一步 %.0f ms），每步候选 %@", reused, apple, rime, model, ahead,
                hyps.map(String.init).joined(separator: "/"))
     }
+}
+
+/// 两句只差在 他 / 她 / 它 上（一样长，不一样的字都是这三个之一）。
+func onlyPronouns(_ a: String, _ b: String) -> Bool {
+    let pronouns: Set<Character> = ["他", "她", "它"]
+    guard a != b, a.count == b.count else { return false }
+    return zip(a, b).allSatisfy { $0 == $1 || (pronouns.contains($0) && pronouns.contains($1)) }
 }

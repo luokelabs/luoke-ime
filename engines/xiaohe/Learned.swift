@@ -64,3 +64,45 @@ func learnedSentence(_ input: String, spans: [LearnedSpan], appleFull: (String) 
     }
     return out
 }
+
+/// 改后对比（引擎协议「revised」）：上屏的一段（pieces，上屏时的字 before）后来被用户改成了 after。
+/// 改动处往前后补到至少 minChars 个字（只补按键对得上的字），每个字都在它那个音节的按键的候选里（readable），
+/// 就学成这串键的改选：返回（按键，词）。字数变了、改成了别的音、补不够字的，不学（nil）。
+func revisionLesson(pieces: [[String: Any]], before: String, after: String, minChars: Int = learnedMinSyllables,
+                    ends: (String) -> [Int], readable: (String, Character) -> Bool) -> (keys: String, word: String)? {
+    var charKeys: [String?] = []
+    var text = ""
+    for p in pieces {
+        guard let t = p["text"] as? String, let input = p["input"] as? String else { return nil }
+        text += t
+        let e = ends(input)
+        if p["index"] is Int, p["char"] == nil, isHan(t), e.count == t.count, e.last == input.count {
+            let keys = Array(input)
+            var from = 0
+            for end in e {
+                charKeys.append(String(keys[from..<end]))
+                from = end
+            }
+        } else {
+            charKeys += Array(repeating: nil, count: t.count)
+        }
+    }
+    let old = Array(before), new = Array(after), n = old.count
+    guard text == before, new.count == n, old != new, minChars > 0 else { return nil }
+    var lo = 0
+    while old[lo] == new[lo] { lo += 1 }
+    var hi = n
+    while hi > lo, old[hi - 1] == new[hi - 1] { hi -= 1 }
+    while hi - lo < minChars {
+        if lo > 0, charKeys[lo - 1] != nil { lo -= 1 } else if hi < n, charKeys[hi] != nil { hi += 1 } else { break }
+    }
+    guard hi - lo >= minChars, hi - lo <= 12 else { return nil }
+    var keys = ""
+    for i in lo..<hi {
+        guard let k = charKeys[i], readable(k, new[i]) else { return nil }
+        keys += k
+    }
+    let word = String(new[lo..<hi])
+    guard isHan(word) else { return nil }
+    return (keys, word)
+}

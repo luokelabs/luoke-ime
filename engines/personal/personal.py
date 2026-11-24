@@ -5,7 +5,7 @@
 （顶层 projects/luoke-ime.md「在记忆里读写什么」）：
 - ime-commit（用户 / 陈述）：上屏的字，同一应用里接连的上屏合成一段记一条；这一段开始时光标前的字放在
   data.context 里、标成第三方写的（前文可能是别人写的，记忆只拿它理解上下文）。切走时的自动上屏单独记、标 auto，归纳时不当依据。
-- ime-correction（用户 / 活动）：上屏后马上删改、在候选里没选首选。
+- ime-correction（用户 / 活动）：上屏后马上删改、在候选里没选首选、上屏后在输入框里把字改了（壳的改后对比，revised）。
 - ime-forget（用户 / 陈述）：在候选窗里忘掉一个候选（Shift+⌫）。
 凭证（密码、验证码、密钥和令牌、完整卡号和证件号）只遮那一串、其余照记（顶层 ADR 0013，luoke_mem.mask_secrets；库写进去前
 也会再遮）。健康、法律、宗教政治照 luoke_mem.sensitive_kinds 标上类别：标了不藏，只是推出来的要用户点头才生效。
@@ -136,6 +136,17 @@ class Store:
 
 # ---- 上屏合成一段 --------------------------------------------------------------
 
+def changed(old, new):
+    """两段字去掉相同的开头和结尾，剩下改了的部分。"""
+    i = 0
+    while i < min(len(old), len(new)) and old[i] == new[i]:
+        i += 1
+    j = 0
+    while j < min(len(old), len(new)) - i and old[-1 - j] == new[-1 - j]:
+        j += 1
+    return old[i:len(old) - j], new[i:len(new) - j]
+
+
 class Segment:
     def __init__(self, m, now):
         self.app = m.get("app")
@@ -249,6 +260,27 @@ class Recorder:
             elif count > 0:
                 self._correction("deleted", "删掉了刚上屏的 %d 个字" % count, {"count": count}, now, kinds=self.last_kinds)
 
+    def revised(self, m):
+        """上屏的一段后来被用户在输入框里改了（壳的改后对比）：手上这一段里还有它就照改过的记，另记一条改正。"""
+        with self.lock:
+            now = self.clock()
+            counts["revised"] += 1
+            before, after = m.get("before") or "", m.get("text") or ""
+            if not before or not after or before == after:
+                return
+            old, new = changed(before, after)
+            text = "把刚上屏的「%s」改成了「%s」" % (old, new)
+            data = {"before": old, "after": new}
+            seg = self.seg
+            if seg is not None and m.get("after") in seg.ids and before in seg.text:
+                i = seg.text.rfind(before)
+                seg.text = seg.text[:i] + after + seg.text[i + len(before):]
+                seg.typed += after
+                seg.last = now
+                seg.corrections.append(("revised", text, dict(data, app=seg.app, source=seg.source), now))
+            else:
+                self._correction("revised", text, data, now, kinds=self.last_kinds)
+
     def forget(self, m):
         with self.lock:
             counts["forget"] += 1
@@ -289,7 +321,7 @@ class Recorder:
             counts["dropped.secret"] += 1
             return
         data = dict(data)
-        for k in ("text", "top", "deleted"):
+        for k in ("text", "top", "deleted", "before", "after"):
             if isinstance(data.get(k), str):
                 v = self.mask(data[k])
                 if v is None:
@@ -1031,6 +1063,8 @@ def main():
             recorder.committed(m)
         elif t == "deleted":
             recorder.deleted(m)
+        elif t == "revised":
+            recorder.revised(m)
         elif t == "forget":
             recorder.forget(m)
         # 不认识的类型：忽略

@@ -61,7 +61,14 @@ final class FakeClient: SessionClient {
     func textBeforeCursor(limit: Int) -> String? { readable ? String(document.suffix(limit)) : nil }
     /// 模拟 Grok 这类应用：输入法接下 Tab 以后自己又插了个制表符（测试里手动往 document 里加）。
     var supportsReplace = false
-    func caretLocation() -> Int? { supportsReplace ? (document as NSString).length : nil }
+    func caretLocation() -> Int? { supportsReplace || revisable ? (document as NSString).length : nil }
+    /// 读得到文档里的字（改后对比）：测试里直接改 document 当作用户在输入框里改了字。
+    var revisable = false
+    func text(at location: Int, length: Int) -> String? {
+        let d = document as NSString
+        guard revisable, location >= 0, location <= d.length else { return nil }
+        return d.substring(with: NSRange(location: location, length: min(length, d.length - location)))
+    }
     func replaceStrayTab(at location: Int, with text: String) -> Bool {
         let d = document as NSString
         guard supportsReplace, !text.isEmpty, location < d.length, d.substring(with: NSRange(location: location, length: 1)) == "\t" else { return false }

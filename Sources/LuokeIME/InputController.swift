@@ -161,6 +161,13 @@ final class LuokeInputController: IMKInputController, SessionClient {
         return sel.location == NSNotFound ? nil : sel.location
     }
 
+    func text(at location: Int, length: Int) -> String? {
+        guard let c = textClient, location >= 0, length > 0, !IsSecureEventInputEnabled() else { return nil }
+        let total = c.length()
+        guard total != NSNotFound, location < total else { return total == location ? "" : nil }
+        return c.attributedSubstring(from: NSRange(location: location, length: min(length, total - location)))?.string
+    }
+
     func replaceStrayTab(at location: Int, with text: String) -> Bool {
         // 只在光标处放着显示串时认（联想打开时不管拼音显示在哪都放，0.1.16 起）：没有显示串时 location 处是原文，可能本来就是个制表符，不碰。
         guard let c = textClient, !lastMarked.isEmpty else { return false }

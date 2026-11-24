@@ -3,7 +3,7 @@
   "accessory": "luoke-ime",
   "bundle_id": "ai.luoke.inputmethod.Luoke",
   "name": "螺壳输入法",
-  "version": "0.1.116",
+  "version": "0.1.118",
   "type": "input-method",
   "min_macos": "26.2",
   "entry": [],

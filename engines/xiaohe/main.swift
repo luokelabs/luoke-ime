@@ -102,8 +102,21 @@ if CommandLine.arguments.contains("--selftest") {
         m.forget(keys: "eeffgghh", text: "后面四字")
         check("忘掉的不用", learnedSpans("aabbccddeeffgghh", ends: ends, memory: m), [LearnedSpan(start: 4, consume: 8, word: "四字词语")])
         let spans = learnedSpans("aabbccddeeffgghh", ends: ends, memory: m)
+        // 改后对比学到的：改动处补到 3 个字，按键对得上才学
+        let ps: [[String: Any]] = [["input": "aabbcc", "text": "甲乙丙", "index": 0], ["input": "ddee", "text": "丁戊", "index": 1]]
+        let two = { (k: String) in Array(stride(from: 2, through: k.count, by: 2)) }
+        let lesson = revisionLesson(pieces: ps, before: "甲乙丙丁戊", after: "甲乙丙丁己", minChars: 3, ends: two) { _, _ in true }
+        let raw: [[String: Any]] = [["input": "aabbcc", "text": "甲乙丙", "index": 0], ["input": "de", "text": "de"], ["input": "ff", "text": "戊", "index": 0]]
+        guard lesson?.keys == "ccddee", lesson?.word == "丙丁己",
+              revisionLesson(pieces: ps, before: "甲乙丙丁戊", after: "甲乙丙丁己", minChars: 3, ends: two, readable: { _, c in c != "己" }) == nil,
+              revisionLesson(pieces: ps, before: "甲乙丙丁戊", after: "甲乙丙丁戊己", minChars: 3, ends: two, readable: { _, _ in true }) == nil,
+              revisionLesson(pieces: raw, before: "甲乙丙de戊", after: "甲乙丙de己", minChars: 3, ends: two, readable: { _, _ in true }) == nil
+        else { print("自检没过：改后对比学到的词"); exit(1) }
         guard learnedSentence("aabbccddeeffgghh", spans: spans, appleFull: { ["aabb": "前面", "gghh": "后面"][$0] }) == "前面四字词语后面",
               learnedSentence("aabbccddeeffgghh", spans: spans, appleFull: { ["aabb": "前面"][$0] }) == nil else { print("自检没过：长句里学过的词（拼整句）"); exit(1) }
+    }
+    guard onlyPronouns("它还能", "他还能"), onlyPronouns("给她的", "给它的"), !onlyPronouns("他还能", "他还能"), !onlyPronouns("它还能", "他还会") else {
+        print("自检没过：只差在代词"); exit(1)
     }
     print("自检通过（\(Scheme.current.name)）：\(sample) → \(r.display) → \(r.candidates.first?.text ?? "无")")
     exit(0)
@@ -147,6 +160,9 @@ var pauseAlways = false
 /// 选项 half（默认关，评测对照用）：双拼末尾只敲了声母的那个键也重排。默认不重排：音节还没打完，下一个键多半就换了，
 /// 博客语料逐键测，打分少三四成，按空格时上屏的首选不变（见 README，luokelabs/luoke-ime#10）。
 var halfOption = false
+/// 选项 pronoun_gate：只差在 他 / 她 / 它 时换首选的门槛（见 Refine.swift），默认 0：模型觉得哪个更像就用哪个。
+/// 博客 600 条：门槛 3（和别处一样）时 90.0%，0 和 1 都是 91.2%（改对 7 条、没有改错）；1 时「它还能自己判断」那句仍是「他」。
+var pronounGateOption: Double? = 0
 var correctOption = true // 选项 correct：打错纠正（Typo.swift），评测对照用
 var budget: Budget {
     var b: Budget
@@ -172,6 +188,7 @@ func startHelpers(_ options: [String: Any]) {
     pauseAlways = options["pause_when"] as? String == "always"
     halfOption = options["half"] as? Bool ?? false
     correctOption = options["correct"] as? Bool ?? true
+    pronounGateOption = (options["pronoun_gate"] as? Double) ?? (options["pronoun_gate"] as? Int).map(Double.init) ?? pronounGateOption
     learnedMinSyllables = options["learned_min"] as? Int ?? learnedMinSyllables
     let fuzzy = (options["fuzzy"] as? [String] ?? []).map { $0.components(separatedBy: "_") }.filter { $0.count == 2 }
     mecabra.enableFuzzy(fuzzy)
@@ -249,6 +266,8 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
 }
 
 var decided = Decided()
+/// 最近几次上屏的分段（上屏序号 → pieces），revised 用。
+var recentCommits: [Int: [[String: Any]]] = [:]
 
 /// 快的那份答复（苹果和 RIME 的候选）。refine：要不要让模型重排（至少两个音节、全部读得通、用户没在这串键上改选过；
 /// 双拼末尾只敲了声母时不重排，除非开了 half）；
@@ -333,6 +352,7 @@ func answerQuery(id: Int, input: String, context: String) {
         if whole { b.rounds = .max }
         var refiner = Refiner(apple: appleCandidates, wordConsume: { reading($0).consume(chars: $1) }, rime: rime, scorer: scorer,
                               gate: gate, budget: b, cancelled: { inbox.hasQuery() })
+        refiner.pronounGate = pronounGateOption
         refiner.learned = learnedSpans(input, ends: reading(input).ends, memory: memory)
         if profiling { refiner.profile = Profile() }
         refiner.profile?.reused = start.count
@@ -399,6 +419,11 @@ while let m = inbox.pop() {
     case "committed":
         decided = Decided() // 上屏后前文变了，之前定下的词不再沿用
         stats.committed(m)
+        // 留着最近几次上屏的分段，用户后来在输入框里改了字（revised）时对得上按键
+        if m["auto"] as? Bool != true, let id = m["id"] as? Int, let pieces = m["pieces"] as? [[String: Any]] {
+            recentCommits[id] = pieces
+            if recentCommits.count > 16, let oldest = recentCommits.keys.min() { recentCommits[oldest] = nil }
+        }
         // 切走时的自动上屏不是用户确认的，不学
         // 以词定字取的一个字（piece 带 char）不是这串键的意思，不学；带着它拼起来的一段也不学
         guard m["auto"] as? Bool != true, let pieces = m["pieces"] as? [[String: Any]], !pieces.contains(where: { $0["char"] != nil }) else { continue }
@@ -436,6 +461,18 @@ while let m = inbox.pop() {
         log("清掉了学到的词")
     case "deleted":
         stats.deleted(m)
+    case "revised": // 上屏的字后来被用户改了（改后对比）：改成的说法对得上按键就学成改选
+        guard let id = m["after"] as? Int, let pieces = recentCommits[id], let before = m["before"] as? String,
+              let after = m["text"] as? String else { continue }
+        recentCommits[id] = nil
+        let lesson = revisionLesson(pieces: pieces, before: before, after: after, ends: { reading($0).ends }) { keys, ch in
+            let c = String(ch)
+            return reading(keys).candidates.contains { $0.text == c } || (rime?.menu(keys).contains(c) ?? false)
+        }
+        guard let lesson, !memory.isForgotten(lesson.keys, lesson.word) else { continue }
+        decided = Decided()
+        memory.choose(keys: lesson.keys, text: lesson.word)
+        memory.persist()
     default:
         break // 不认识的：按协议忽略
     }

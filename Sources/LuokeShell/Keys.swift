@@ -78,6 +78,8 @@ public struct Timing: Equatable {
     public var predictWait = 1.0
     /// 联想提示亮多久：过了就收起，Tab 照常交给应用。
     public var predictHint = 4.0
+    /// 上屏后过这么久再读光标位置、给刚上屏的字定位（改后对比）：有的应用（Chromium）上屏是异步落下的。
+    public var watchDelay = 0.2
 
     public init() {}
 }

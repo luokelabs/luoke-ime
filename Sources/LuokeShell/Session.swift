@@ -39,11 +39,14 @@ public protocol SessionClient: AnyObject {
     /// `location` 处要是应用插的制表符，就把选的联想上屏、并把那个制表符去掉，返回 true；不是就什么都不做（照常上屏）。
     /// `text` 为空（收起联想）时可以不做：宿主那边要去掉它得再替换一次，Chromium 里先后不可靠。
     func replaceStrayTab(at location: Int, with text: String) -> Bool
+    /// 文档里从 `location` 起最多 `length` 个 UTF-16 单位的字（改后对比用，只读刚上屏那一段附近）；应用不提供时 nil。
+    func text(at location: Int, length: Int) -> String?
 }
 
 extension SessionClient {
     public func caretLocation() -> Int? { nil }
     public func replaceStrayTab(at location: Int, with text: String) -> Bool { false }
+    public func text(at location: Int, length: Int) -> String? { nil }
     public var mayRecord: Bool { true }
     public var mayPredict: Bool { true }
     public var memoryConsented: Bool { true }
@@ -152,6 +155,10 @@ public final class Session {
     private var lastCommit: (id: Int, at: TimeInterval, followedBy: String, told: Bool, recorded: Int?)?
     private var backspaceRun = 0
     private var lastBackspaceAt: TimeInterval = 0
+    // 改后对比（Revision.swift）：盯着的那一段，和刚上屏、还没定位的一段（应用可能还没把字落下，过一会儿、下一个键、
+    // 按鼠标或切走时再读光标）
+    private var watch: Revision.Watch?
+    private var pendingWatch: (text: String, told: Int?, recorded: Int?, at: TimeInterval)?
     // 中英文之间加空格：自动加的空格在 history 里的位置；用户删掉它之后，紧接着那一下不再加
     private var autoSpaceAt: Int?
     private var suppressAutoSpace = false
@@ -249,6 +256,7 @@ public final class Session {
         if !isComposing { sawSecureInput = false }
         if client.isSecureInput { sawSecureInput = true }
         pump(render: false)
+        if pendingWatch != nil, !isComposing { placeWatch() } // 应用还没处理这个键：光标还在刚上屏的字后面
         defer { render() }
         switch e.key {
         case let .modifierDown(m): modifierDown(m, flags: e.flags); return false
@@ -283,6 +291,7 @@ public final class Session {
             query = q
         }
         if let c = lastCommit, t >= (backspaceRun > 0 ? lastBackspaceAt : c.at) + timing.deletedIdle { flushDeleted() }
+        if let w = pendingWatch, t >= w.at + timing.watchDelay, !isComposing { placeWatch() }
         if let p = pressing, p.clean, hot == nil, t >= p.since + timing.holdTrigger,
            let i = hotkeyIndex(for: p.modifier), hotkeys[i].manifest.hotkey?.mode == .hold {
             startHotkey(i)
@@ -304,6 +313,7 @@ public final class Session {
             if q.answer == nil, !q.hangReported { ds.append(q.sentAt + timing.hang) }
         }
         if let c = lastCommit { ds.append((backspaceRun > 0 ? lastBackspaceAt : c.at) + timing.deletedIdle) }
+        if let w = pendingWatch, !isComposing { ds.append(w.at + timing.watchDelay) }
         if let p = pressing, p.clean, hot == nil, let i = hotkeyIndex(for: p.modifier),
            hotkeys[i].manifest.hotkey?.mode == .hold { ds.append(p.since + timing.holdTrigger) }
         if let s = hot?.stopSentAt { ds.append(s + timing.stopTimeout) }
@@ -319,6 +329,8 @@ public final class Session {
         disarm(.focus)
         if isComposing { finish(budget: 0, auto: true) }
         flushDeleted()
+        placeWatch()
+        checkWatch(final: true)
         forgetHistory()
         prediction = nil
         pairOpen = [:]
@@ -335,6 +347,7 @@ public final class Session {
         spoilPress()
         pump(render: false)
         settleComma(",", full: true)
+        if !isComposing { placeWatch() } // 应用还没处理这一下点击：光标还在刚上屏的字后面
         let composing = isComposing
         if composing { finish(budget: 0, auto: true) }
         forgetHistory() // 光标可能被点到了别处
@@ -398,6 +411,7 @@ public final class Session {
         }
         if case let .character(c) = e.key {
             if accepts(c, engine.manifest) {
+                checkWatch(final: false) // 开始输入新的一段：先看看上一段上屏的字有没有被改过
                 contextBase = readContext(limit: max(engine.manifest.context, recordingContext, settings.autoSpace ? 1 : 0))
                 input.append(c)
                 sendQuery()
@@ -619,6 +633,7 @@ public final class Session {
             }
             let recorded = record(text, kind: .typing, source: engine.id, auto: auto, context: contextBase, pieces: pieces)
             lastCommit = (id, now, "", told, recorded)
+            if !auto, inserted == text, told || recorded != nil { pendingWatch = (text, told ? id : nil, recorded, now) }
             backspaceRun = 0
             count(.commit)
             count(.pickFirst, pieces.filter { $0.index == 0 }.count)
@@ -1057,6 +1072,55 @@ public final class Session {
         }
         lastCommit = nil
         backspaceRun = 0
+    }
+
+    // MARK: - 改后对比
+
+    /// 读不读得了输入框里的字：安全输入（这一段里碰到过也算）、暂停记录、禁止记录的应用里不读。
+    private var mayReadBack: Bool { !client.isSecureInput && !sawSecureInput && client.mayRecord }
+
+    /// 给刚上屏的那一段定位：光标前面正好是它，就记下位置和前后几个字。落在正盯着的那一段里面的（用户在改它），
+    /// 不另盯，接着盯原来那段；不然先把原来那段最后看一次，再换成这一段。
+    private func placeWatch() {
+        guard let p = pendingWatch else { return }
+        pendingWatch = nil
+        guard mayReadBack, let end = client.caretLocation() else { return }
+        let length = (p.text as NSString).length
+        let start = end - length
+        guard start >= 0 else { return }
+        let from = max(0, start - Revision.anchor)
+        guard let near = client.text(at: from, length: end + Revision.anchor - from) else { return }
+        let ns = near as NSString
+        let head = start - from
+        guard ns.length >= head + length, ns.substring(with: NSRange(location: head, length: length)) == p.text else { return }
+        let w = Revision.Watch(text: p.text, start: start, before: ns.substring(to: head), after: ns.substring(from: head + length),
+                               told: p.told, recorded: p.recorded, at: p.at)
+        if let old = watch, start >= old.start, start < old.end { return } // 接着往后打的不算
+        // 前后都没有字（打在空框里）：读回时分不出还是不是这个框，不盯；原来盯着的那段也不在这儿了
+        guard !w.before.isEmpty || !w.after.isEmpty else { watch = nil; return }
+        checkWatch(final: true)
+        watch = w
+    }
+
+    /// 读回盯着的那一段：被改了就转给打字引擎和个人化组件，不再盯；没改的再盯几次（final：最后一次）。
+    private func checkWatch(final: Bool) {
+        guard var w = watch else { return }
+        // 光标跑远了（多半换了输入框，或者到别处打字去了）：不读，不再盯
+        guard let caret = client.caretLocation(), w.isNear(caret: caret) else { watch = nil; return }
+        let range = w.window
+        if mayReadBack, let window = client.text(at: range.start, length: range.length),
+           let now = Revision.current(of: w, window: window, windowStart: range.start), Revision.isRevision(w.text, now) {
+            if let id = w.told, let engine = typing, engine.manifest.feedback, mayLearn {
+                engine.channel.send(.revised(after: id, before: w.text, text: now))
+            }
+            if let r = w.recorded, let p = personal, mayForward {
+                p.channel.send(.revised(after: r, before: w.text, text: now))
+            }
+            watch = nil
+            return
+        }
+        w.checks += 1
+        watch = final || w.checks >= 5 || self.now - w.at > 600 ? nil : w
     }
 
     // MARK: - 个人化组件

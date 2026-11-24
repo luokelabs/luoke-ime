@@ -10,6 +10,8 @@ public enum ShellMessage: Equatable {
     case query(id: Int, input: String, context: String?, app: String?)
     case committed(Committed)
     case deleted(after: Int, count: Int, followedBy: String)
+    /// 上屏的那一段后来在输入框里被改成了 `text`（改后对比，Revision.swift）；`before` 是上屏时的字。
+    case revised(after: Int, before: String, text: String)
     case forget(input: String, text: String, context: String?, source: String? = nil)
     /// 用户在菜单里要清掉引擎学到的东西（只发给声明了 `forget_all` 的引擎）。
     case forgetAll
@@ -74,6 +76,8 @@ public enum ShellMessage: Equatable {
             var m: [String: Any] = ["type": "deleted", "after": after, "count": count]
             if !followedBy.isEmpty { m["followed_by"] = followedBy }
             return m
+        case let .revised(after, before, text):
+            return ["type": "revised", "after": after, "before": before, "text": text]
         case let .forget(input, text, context, source):
             var m: [String: Any] = ["type": "forget", "input": input, "text": text]
             m["context"] = context
