@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """语音引擎分段的测试：不开麦克风、不连主控。
 
-用合成的 WAV 当录音（test_wav），自己扮主控答转写：说 3 秒、停一下（segment_secs 设成 2，在停顿处分段），再松开。
+用合成的 WAV 当录音（test_wav；随机噪声当说话，所以关掉 VAD、按音量判断），自己扮主控答转写：说 3 秒、停一下（segment_secs 设成 2，在停顿处分段），再松开。
 分段以后，假的转写模型照抄它拿到的上下文（真模型在新的一段几乎没声音时会这样），看上屏的字有没有重复。
 
   ./build.sh && ./test_segments.py
@@ -50,7 +50,7 @@ def dictate(tmp, name, parts, stop_at, after_roll, segment_secs=2, first=None, t
             p.stdin.write(json.dumps(m, ensure_ascii=False) + "\n")
             p.stdin.flush()
 
-    put({"type": "hello", "options": {"test_wav": path, "tidy": bool(tidy), "segment_secs": segment_secs}})
+    put({"type": "hello", "options": {"test_wav": path, "tidy": bool(tidy), "segment_secs": segment_secs, "vad": False}})
     put({"type": "arm", "id": 1})
     put({"type": "start", "id": 1, "context": ""})
     out, shown, rolled = {}, [], threading.Event()
@@ -121,7 +121,7 @@ def no_hub(tmp):
                 ended.set()
                 return
 
-    put({"type": "hello", "options": {"test_wav": path}})
+    put({"type": "hello", "options": {"test_wav": path, "vad": False}})
     put({"type": "arm", "id": 1})
     put({"type": "start", "id": 1, "context": ""})
     threading.Thread(target=read, daemon=True).start()

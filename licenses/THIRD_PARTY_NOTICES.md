@@ -13,6 +13,7 @@
 | marisa-trie | 0.3.1 | BSD-2-Clause（与 LGPL-2.1-or-later 二选一，这里取 BSD） | 同上 | https://github.com/s-yata/marisa-trie |
 | OpenCC | 1.1.9 | Apache-2.0 | 同上 | https://github.com/BYVoid/OpenCC |
 | yaml-cpp | 2f86d13（2025-04-29） | MIT | 同上 | https://github.com/jbeder/yaml-cpp |
+| earshot | 1.2.2 | MIT OR Apache-2.0（两份原文都在 `licenses/earshot`） | `engines/voice/earshot.bin`（权重原样）；做法照搬写成 Swift，在语音引擎 `engines/voice/voice` 里 | https://github.com/pykeio/earshot |
 | Boost（只用头文件） | 1.89.0 | BSL-1.0 | 编进 librime 的模板代码 | https://www.boost.org |
 
 librime 和这些依赖由 `scripts/build-librime.sh` 从源码编（部署目标 macOS 14，版本照 librime 1.17.0 的子模块），没有改动源码。

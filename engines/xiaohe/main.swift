@@ -83,6 +83,28 @@ if CommandLine.arguments.contains("--selftest") {
         let typo = Array("wozliifj")
         guard Typo.firstBad(typo) == 2, Typo.edits(typo, from: 0, to: 4).contains("woxliifj") else { print("自检没过：打错纠正"); exit(1) }
     }
+    // 长句里学过的词（Learned.swift）：用假的记忆和每两个键一个音节的切分，不碰数据目录
+    do {
+        let ends = Array(stride(from: 2, through: 16, by: 2))
+        var m = Memory()
+        func check(_ name: String, _ got: [LearnedSpan], _ want: [LearnedSpan]) {
+            guard got == want else { print("自检没过：长句里学过的词（\(name)）：\(got)"); exit(1) }
+        }
+        check("没学过", learnedSpans("aabbccddeeffgghh", ends: ends, memory: m), [])
+        m.chosen = ["ccddeeff": ["四字词语": 1], "aabb": ["二字": 5]]
+        check("四个音节的用、两个音节的不用", learnedSpans("aabbccddeeffgghh", ends: ends, memory: m), [LearnedSpan(start: 4, consume: 8, word: "四字词语")])
+        check("整串相同的不在这里", learnedSpans("ccddeeff", ends: [2, 4, 6, 8], memory: m), [])
+        check("对不上音节的不用", learnedSpans("xccddeeffgghhiij", ends: [2, 4, 6, 8, 10, 12, 14, 16], memory: m), [])
+        m.chosen["ccddeeff"]!["四字词汇"] = 2
+        check("同一串键学过两个词的不用", learnedSpans("aabbccddeeffgghh", ends: ends, memory: m), [])
+        m.chosen = ["ccddeeff": ["四字词语": 1], "eeffgghh": ["后面四字": 3]]
+        check("重叠时取次数多的", learnedSpans("aabbccddeeffgghh", ends: ends, memory: m), [LearnedSpan(start: 8, consume: 8, word: "后面四字")])
+        m.forget(keys: "eeffgghh", text: "后面四字")
+        check("忘掉的不用", learnedSpans("aabbccddeeffgghh", ends: ends, memory: m), [LearnedSpan(start: 4, consume: 8, word: "四字词语")])
+        let spans = learnedSpans("aabbccddeeffgghh", ends: ends, memory: m)
+        guard learnedSentence("aabbccddeeffgghh", spans: spans, appleFull: { ["aabb": "前面", "gghh": "后面"][$0] }) == "前面四字词语后面",
+              learnedSentence("aabbccddeeffgghh", spans: spans, appleFull: { ["aabb": "前面"][$0] }) == nil else { print("自检没过：长句里学过的词（拼整句）"); exit(1) }
+    }
     print("自检通过（\(Scheme.current.name)）：\(sample) → \(r.display) → \(r.candidates.first?.text ?? "无")")
     exit(0)
 }
@@ -150,6 +172,7 @@ func startHelpers(_ options: [String: Any]) {
     pauseAlways = options["pause_when"] as? String == "always"
     halfOption = options["half"] as? Bool ?? false
     correctOption = options["correct"] as? Bool ?? true
+    learnedMinSyllables = options["learned_min"] as? Int ?? learnedMinSyllables
     let fuzzy = (options["fuzzy"] as? [String] ?? []).map { $0.components(separatedBy: "_") }.filter { $0.count == 2 }
     mecabra.enableFuzzy(fuzzy)
     fuzzyPairs = Set(fuzzy.map { $0.joined(separator: "_") })
@@ -193,6 +216,13 @@ func fastAnswer(_ input: String) -> (display: String, candidates: [[String: Any]
         out.append(["text": t, "consume": keys.count])
     }
     let rememberedCount = out.count
+    // 长句里有学过的词（Learned.swift）：照用学过的词、别的部分接苹果的整句，放在最前面
+    if complete, rememberedCount == 0, let t = learnedSentence(input, spans: learnedSpans(input, ends: r.ends, memory: memory), appleFull: { seg in
+        reading(seg).candidates.first { $0.consume == seg.count && isHan($0.text) }?.text
+    }), !memory.isForgotten(input, t) {
+        seen.insert(t)
+        out.append(["text": t, "consume": keys.count])
+    }
     var emoji = 0
     for (t, c) in appleCandidates(input) where !memory.isForgotten(input, t) && seen.insert(t).inserted {
         if !isHan(t) {
@@ -303,6 +333,7 @@ func answerQuery(id: Int, input: String, context: String) {
         if whole { b.rounds = .max }
         var refiner = Refiner(apple: appleCandidates, wordConsume: { reading($0).consume(chars: $1) }, rime: rime, scorer: scorer,
                               gate: gate, budget: b, cancelled: { inbox.hasQuery() })
+        refiner.learned = learnedSpans(input, ends: reading(input).ends, memory: memory)
         if profiling { refiner.profile = Profile() }
         refiner.profile?.reused = start.count
         let started = now()

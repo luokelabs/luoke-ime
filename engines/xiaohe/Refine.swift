@@ -34,6 +34,8 @@ struct Refiner {
     let cancelled: () -> Bool
     /// 记下各部分用时（LUOKE_XIAOHE_PROFILE=1 时）。
     var profile: Profile?
+    /// 整串键里学过的词（Learned.swift）：轮到这一段时直接定下，不问模型，不算步数；它前面的部分只在那一段里选。
+    var learned: [LearnedSpan] = []
 
     /// 定下的一个词。lookahead：定它的时候后面还有几个键。
     struct Step {
@@ -89,17 +91,31 @@ struct Refiner {
     }
 
     /// 整句；被取消或模型出错时返回 nil。从 start（之前定下的词）接着选，每定下一个词调一次 decided。
+    /// 有学过的词时按它们切成几段：学过的词直接定下，别的段各自逐词选（模型看得到前面定下的全部文字）。
+    /// 限了步数的那一步整段一起定，之后的词不再报给 decided（定下的词要首尾相接）。
     func sentence(_ keys: String, context: String, start: [Step] = [], decided: (Step) -> Void = { _ in }) -> String? {
         var done = start.map(\.word).joined()
         var rest = String(keys.dropFirst(start.reduce(0) { $0 + $1.consume }))
         var round = 0
+        var reporting = true
+        func report(_ s: Step) { if reporting { decided(s) } }
         while !rest.isEmpty {
             if cancelled() { return nil }
+            let pos = keys.count - rest.count
+            if let l = learned.first(where: { $0.start == pos }) {
+                report(Step(word: l.word, consume: l.consume, lookahead: rest.count - l.consume))
+                done += l.word
+                rest = String(rest.dropFirst(l.consume))
+                continue
+            }
+            // 这一段到下一个学过的词为止
+            let segEnd = learned.first { $0.start > pos }?.start ?? keys.count
+            let seg = String(rest.prefix(segEnd - pos))
             round += 1
-            let last = round >= budget.rounds // 最后一步：整句一起定
-            let (hyps, first) = hypotheses(rest, profile: profile)
+            let last = round >= budget.rounds // 最后一步：整段一起定
+            let (hyps, first) = hypotheses(seg, profile: profile)
             guard !hyps.isEmpty else { return nil }
-            let d = appleFull(rest)
+            let d = appleFull(seg)
             // 截到最长的首词之后 4 个字（最后一步不截）；截短后相同的整句只打一次分
             let longest = hyps.map { first[$0]!.word.count }.max()!
             let shown = last ? hyps : hyps.map { String($0.prefix(longest + 4)) }
@@ -112,7 +128,7 @@ struct Refiner {
             let scores = scorer.score(context + done, unique) {
                 // 模型在 GPU 上算的时候，先把最可能的下一步（选苹果整句的首词）的候选备好，查过的会留在缓存里
                 let t1 = now()
-                if let d, let w = first[d], w.consume < rest.count { _ = hypotheses(String(rest.dropFirst(w.consume))) }
+                if let d, let w = first[d], w.consume < seg.count { _ = hypotheses(String(seg.dropFirst(w.consume))) }
                 profile?.ahead += now() - t1
             }
             guard let scores else { return nil }
@@ -122,8 +138,13 @@ struct Refiner {
             var best = lp.indices.max { lp[$0] < lp[$1] }!
             if let d, let di = hyps.firstIndex(of: d), lp[best] - lp[di] < gate { best = di }
             let pick = first[hyps[best]]!
-            decided(Step(word: pick.word, consume: pick.consume, lookahead: rest.count - pick.consume))
-            if last { return done + hyps[best] } // 首词之后的补全没逐词选过，不记成定下的词
+            report(Step(word: pick.word, consume: pick.consume, lookahead: rest.count - pick.consume))
+            if last { // 首词之后的补全没逐词选过，不记成定下的词
+                reporting = false
+                done += hyps[best]
+                rest = String(rest.dropFirst(seg.count))
+                continue
+            }
             done += pick.word
             rest = String(rest.dropFirst(pick.consume))
         }

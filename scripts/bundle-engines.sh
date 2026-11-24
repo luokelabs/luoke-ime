@@ -68,7 +68,7 @@ PY
 find "$out" -name __pycache__ -prune -exec rm -rf {} +
 
 # ---- 语音
-cp "$v/engine.json" "$v/voice" "$v/tidy_prompt.txt" "$v/tidy_examples.json" "$out/voice/"
+cp "$v/engine.json" "$v/voice" "$v/tidy_prompt.txt" "$v/tidy_examples.json" "$v/earshot.bin" "$out/voice/"
 
 # 改过装载路径的 Mach-O 原来的签名就失效了，Apple Silicon 上会被直接杀掉：先临时签上，能直接跑（install.sh 再用 Developer ID 重签）
 for e in ziranma quanpin; do install_name_tool -delete_rpath "$root/vendor/librime/lib" "$out/$e/rime_helper" 2>/dev/null || true; done

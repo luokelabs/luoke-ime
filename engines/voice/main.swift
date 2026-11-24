@@ -9,9 +9,12 @@
 // - 终稿出来以后请主控整理（luoke-ime.tidy：去口头禅、理顺改口、数字和英文的写法、排列表和分段，提示词是同目录的 tidy_prompt.txt），
 //   整理完再上屏；出错或等不到（2.5 秒起按字数加，最多 5 秒）就上屏没整理的终稿。分了段的松开后整篇一起编辑一次。选项 tidy 为 false 时不整理。
 // - 上下文：记忆里的常用说法（热词，问个人化组件要），加上光标前的字接上前面各段原文的最后 300 字。
-// - 音频只在内存里，会话结束就丢。不做 VAD，只按声音大小判断有没有说话。
+// - 有没有说话、哪里是停顿，按 VAD（vad.swift，earshot 的做法和权重）判断，不看声音大小：键盘声、风扇声不算说话，小声说话也算。
+//   earshot.bin 读不了、或选项 vad 为 false（测试用）时退回按音量判断。
+// - 转写出来的字和热词读音一样、写法不一样时换成热词（hotfix.swift）。
+// - 音频只在内存里，会话结束就丢。
 //
-//   swiftc -O -o voice main.swift
+//   ./build.sh（swiftc -O -o voice main.swift vad.swift hotfix.swift）
 // 测试：选项 test_wav（或环境变量 LUOKE_VOICE_WAV）给一个 16 kHz 单声道 PCM16 的 WAV，就不开麦克风，按住时把这个文件
 // 按实时速度当成录到的声音。
 import AudioToolbox
@@ -41,6 +44,25 @@ func resetTyping() { displayed = ""; target = ""; draftGap = draftInterval; last
 /// 每 200 个字多等 1 秒，最多 5 秒。
 func tidyWait(chars: Int) -> Double { min(5, 2.5 + Double(chars) / 200) }
 let q = DispatchQueue(label: "voice")   // 下面的状态都只在这个队列上读写
+
+/// 判断是不是在说话（vad.swift）；读不了权重时为 nil，退回按音量判断。引擎在自己的目录里运行。
+let earshot = Earshot(weights: "earshot.bin")
+/// 选项 vad 为 false 时按音量判断（测试分段时用随机噪声当说话）。
+var vadEnabled = true
+
+// 测试用：voice --vad-scores <16 kHz 单声道 PCM16 的 WAV>，每帧（16 ms）打一行分数，和 earshot 的结果对（test_vad.py）。
+if CommandLine.arguments.count == 3, CommandLine.arguments[1] == "--vad-scores" {
+    guard let model = earshot, let all = FileManager.default.contents(atPath: CommandLine.arguments[2]),
+          let r = all.range(of: Data("data".utf8)) else { log("读不了权重或 WAV"); exit(1) }
+    let pcm = all.subdata(in: (r.upperBound + 4)..<all.count)
+    let samples: [Int16] = pcm.withUnsafeBytes { raw in (0..<(raw.count / 2)).map { Int16(littleEndian: raw.loadUnaligned(fromByteOffset: $0 * 2, as: Int16.self)) } }
+    model.reset()
+    var out = ""
+    var i = 0
+    while i + 256 <= samples.count { out += String(format: "%.4f\n", model.predict(samples[i..<(i + 256)])); i += 256 }
+    FileHandle.standardOutput.write(Data(out.utf8))
+    exit(0)
+}
 
 func send(_ m: [String: Any]) {
     let d = try! JSONSerialization.data(withJSONObject: m)
@@ -254,10 +276,20 @@ struct Dictation {
     var armedAt = Date()        // 什么时候 arm 的
     var ready = false           // 话筒真的开始收音了（录到的不再全是零）
     var levels: [Float] = []    // 每块（0.1 秒）的音量，dBFS；全是零的块（话筒还没开始收音）不记
-    var loud: Int { let f = noiseFloor(levels); return levels.filter { isLoud($0, floor: f) }.count } // 有声音的块数：不到 minLoudBlocks 就当没说话
+    var detector = (vadEnabled ? earshot : nil).map(SpeechDetector.init) // 按 VAD 判断时有
+    var speech: [Bool] = []     // 每块是不是说话（VAD），和 levels 一一对应
+    var loud: Int { spoken(from: 0) } // 说话的块数：不到 minBlocks 就当没说话
     var segLevels = 0           // 这一段的音量从 levels 的哪里开始
     var rollLevels = 0          // 要上一段终稿时 levels 到了哪里（上一段的终稿回来、新的一段从这里开始）
-    var segLoud: Int { let f = noiseFloor(levels); return levels[min(segLevels, levels.count)...].filter { isLoud($0, floor: f) }.count } // 这一段有声音的块数
+    var segLoud: Int { spoken(from: segLevels) } // 这一段说话的块数
+    /// 说话的块至少这么多才算说了话：按 VAD 0.2 秒（它不会把键盘声当说话，宁可松一点、少吞短话），按音量 0.3 秒。
+    var minBlocks: Int { detector != nil ? 2 : 3 }
+    /// 从第 i 块起说话的块数：按 VAD；没有 VAD 时数有声音的块（不是停顿的）。
+    func spoken(from i: Int) -> Int {
+        if detector != nil { return speech[min(i, speech.count)...].filter { $0 }.count }
+        let f = noiseFloor(levels)
+        return levels[min(i, levels.count)...].filter { isLoud($0, floor: f) }.count
+    }
     var cursor = ""             // 光标前已经写的字（壳在 start 里给）：交给转写模型当上下文，前面出现过的名字、英文词更容易认对
     var blocked: String?        // 螺壳这次做不了转写（这一版没开放、模型没准备好、没连上）：光标旁一直提示这一句，不再送音频
     var whole: String?          // 分了段的：松开后整篇一起编辑的结果（列表、分段要看到整篇才排得对）
@@ -539,11 +571,12 @@ func guarded(_ raw: String, _ out: String?) -> String {
 func gotFinal(_ text: String) {
     guard var d = current else { return }
     // 按住了但一直没说话（只有底噪）：模型可能吐出语气词、甚至把上下文整段吐出来，当没说，不上屏
-    if d.loud < minLoudBlocks, d.segs.isEmpty {
+    if d.loud < d.minBlocks, d.segs.isEmpty {
         let f = noiseFloor(d.levels)
-        log("没听到说话（有声音的只有 \(d.loud) 块，最响 \(Int(d.levels.max() ?? -120)) dBFS，底噪 \(Int(f)) dBFS），不上屏")
-        // 录到了比底噪明显响的声音、只是太小（不是只有底噪）：光标旁说一句为什么，不要什么都没有、让人再按一次
-        if d.levels.filter({ $0 > f + 6 }).count >= minLoudBlocks {
+        log("没听到说话（说话的只有 \(d.loud) 块\(d.detector != nil ? "，按 VAD" : "")，最响 \(Int(d.levels.max() ?? -120)) dBFS，底噪 \(Int(f)) dBFS），不上屏")
+        // 录到了比底噪明显响的声音、只是太小（不是只有底噪）：光标旁说一句为什么，不要什么都没有、让人再按一次。
+        // 按 VAD 时只算够不上「有声音」的那些（响的不是说话，是键盘声、咳嗽这类，不提示）
+        if d.levels.filter({ $0 > f + 6 && (d.detector == nil || !isLoud($0, floor: f)) }).count >= minLoudBlocks {
             var hint = "音量过低，未识别到语音"
             if let dev = recorder.device, let v = Audio.inputVolume(dev), v < 0.5 { hint += "：系统设置 › 声音 › 输入中的输入音量偏低" }
             d.blocked = hint
@@ -557,7 +590,7 @@ func gotFinal(_ text: String) {
     // 分段以后的最后一段：刚分段就松开、几乎没说话时，模型会把上下文（前面几段）整段吐出来，接上去就成了两遍。
     // 这一段没说话就当没有；说了的也去掉开头和前文重复的部分
     if !d.segs.isEmpty {
-        if d.segLoud < minLoudBlocks {
+        if d.segLoud < d.minBlocks {
             if !t.isEmpty { log("分段后的最后一段没听到说话（有声音的只有 \(d.segLoud) 块），不要它的 \(t.count) 个字") }
             t = ""
         } else {
@@ -687,7 +720,7 @@ func reply(_ m: [String: Any]) {
             return
         }
         guard var d = current, d.id == p.dictation else { return }
-        var text = stripLeakedHotwords(r["text"] as? String ?? "")
+        var text = correctHotwords(stripLeakedHotwords(r["text"] as? String ?? ""), hotwords)
         if p.roll { return rolled(text) }
         guard p.params["session"] as? String == d.session else { return } // 分段以前那一段的草稿：不要了
         if want == "draft" {
@@ -695,7 +728,7 @@ func reply(_ m: [String: Any]) {
             d.draftInFlight = false
             if !text.isEmpty { d.lastDraft = text }
             current = d
-            if !d.stopped, !text.isEmpty, d.segLoud >= minLoudBlocks { // 这一段还没听到说话：模型可能把上下文吐出来，不显示
+            if !d.stopped, !text.isEmpty, d.segLoud >= d.minBlocks { // 这一段还没听到说话：模型可能把上下文吐出来，不显示
                 let now = Date()
                 if let t = lastTargetAt { draftGap = 0.7 * draftGap + 0.3 * min(3, now.timeIntervalSince(t)) }
                 lastTargetAt = now
@@ -770,6 +803,7 @@ func handle(_ m: [String: Any]) {
         if let b = opts["bluetooth_mic"] as? Bool { recorder.bluetoothMic = b }
         if let t = opts["tidy"] as? Bool { tidyEnabled = t }
         if let sg = opts["segment_secs"] as? Double, sg > 0 { segmentSecs = sg }
+        if let v = opts["vad"] as? Bool { vadEnabled = v }
         warmup()
         refreshHotwords()
     case "arm":
@@ -817,7 +851,7 @@ func handle(_ m: [String: Any]) {
     }
 }
 
-/// 有声音的块（不是停顿的）至少这么多（0.3 秒）才算说了话。
+/// 按音量判断时，有声音的块（不是停顿的）至少这么多（0.3 秒）才算说了话；也是「声音太小」提示的门槛。
 let minLoudBlocks = 3
 
 /// 一块音频的音量（RMS），dBFS；全是零时为 nil。
@@ -848,7 +882,8 @@ func meter(_ l: Float, floor: Float) -> Double { Double(min(1, max(0, (l - (min(
 recorder.onAudio = { data in
     guard var d = current else { return }
     d.pcm.append(data)
-    if let l = level(data) { d.levels.append(l) }
+    let said = d.detector?.push(data).map { $0 >= 0.5 } ?? false // 全是零的块也要送：VAD 要连续的音频
+    if let l = level(data) { d.levels.append(l); d.speech.append(said) }
     // 话筒真的开始收音了（不再全是零：蓝牙耳机切到通话模式、合着盖换麦克风都要一会儿）：告诉壳，黄点变红点
     if !d.ready, data.contains(where: { $0 != 0 }) {
         d.ready = true
@@ -860,7 +895,11 @@ recorder.onAudio = { data in
     // 说到 segmentSecs 以后挑一个停顿的地方切（不在一句话中间切开）：先要这一段的终稿、在后台整理，接着开新的一段；
     // 一直没停顿的话到 maxSegmentSecs 硬切（主控一次最长 120 秒）
     let secs = Double(d.pcm.count - d.segStart) / 32000
-    if d.started, !d.stopped, !d.rolling, d.blocked == nil, secs >= maxSegmentSecs || (secs >= segmentSecs && isPause(level(data) ?? -120, floor: noiseFloor(d.levels), secs: secs)) { transcribe("final", roll: true) }
+    // 按 VAD 时停顿是连着两块（0.2 秒）不是说话；说到 1.5 倍还没等到，一块也算
+    let pause = d.detector != nil
+        ? !said && (secs >= segmentSecs * 1.5 || d.speech.count < 2 || !d.speech[d.speech.count - 2])
+        : isPause(level(data) ?? -120, floor: noiseFloor(d.levels), secs: secs)
+    if d.started, !d.stopped, !d.rolling, d.blocked == nil, secs >= maxSegmentSecs || (secs >= segmentSecs && pause) { transcribe("final", roll: true) }
 }
 
 // 草稿：按住期间每隔 draftInterval 一份，上一份没回来就等它
